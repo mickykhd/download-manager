@@ -1,0 +1,230 @@
+#include "internal.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+const char *cdm_status_str(cdm_status s) {
+    switch (s) {
+        case CDM_OK:            return "ok";
+        case CDM_ERR_ARG:       return "invalid argument";
+        case CDM_ERR_NET:       return "network error";
+        case CDM_ERR_HTTP:      return "http error";
+        case CDM_ERR_IO:        return "i/o error";
+        case CDM_ERR_INTEGRITY: return "integrity check failed";
+        case CDM_ERR_CHANGED:   return "remote file changed";
+        case CDM_ERR_CANCELED:  return "canceled";
+        case CDM_ERR_NOMEM:     return "out of memory";
+        default:                return "internal error";
+    }
+}
+
+void cdm_config_default(cdm_config *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->max_connections = CDM_DEFAULT_MAX_CONN;
+    cfg->start_connections = CDM_DEFAULT_START_CONN;
+    cfg->chunk_size = CDM_DEFAULT_CHUNK;
+    cfg->max_retries = CDM_DEFAULT_RETRIES;
+    cfg->resume = 1;
+    cfg->adaptive = 1;
+}
+
+cdm_status cdm_global_init(void) {
+    return curl_global_init(CURL_GLOBAL_ALL) == CURLE_OK ? CDM_OK : CDM_ERR_INTERNAL;
+}
+
+void cdm_global_cleanup(void) { curl_global_cleanup(); }
+
+static char *dup_str(const char *s) {
+    if (!s) return NULL;
+    size_t n = strlen(s) + 1;
+    char *p = malloc(n);
+    if (p) memcpy(p, s, n);
+    return p;
+}
+
+static char *join_suffix(const char *base, const char *suffix) {
+    size_t n = strlen(base) + strlen(suffix) + 1;
+    char *p = malloc(n);
+    if (p) snprintf(p, n, "%s%s", base, suffix);
+    return p;
+}
+
+cdm_download *cdm_download_create(const cdm_config *cfg) {
+    if (!cfg || !cfg->url) return NULL;
+    cdm_download *d = calloc(1, sizeof(*d));
+    if (!d) return NULL;
+
+    d->cfg = *cfg;
+    if (d->cfg.max_connections <= 0)  d->cfg.max_connections = CDM_DEFAULT_MAX_CONN;
+    if (d->cfg.start_connections <= 0) d->cfg.start_connections = CDM_DEFAULT_START_CONN;
+    if (d->cfg.chunk_size <= 0)       d->cfg.chunk_size = CDM_DEFAULT_CHUNK;
+    if (d->cfg.chunk_size < CDM_MIN_CHUNK) d->cfg.chunk_size = CDM_MIN_CHUNK;
+    if (d->cfg.max_retries < 0)       d->cfg.max_retries = CDM_DEFAULT_RETRIES;
+    if (d->cfg.start_connections > d->cfg.max_connections)
+        d->cfg.start_connections = d->cfg.max_connections;
+
+    d->url = dup_str(cfg->url);
+    d->total_bytes = -1;
+    d->target_conn = d->cfg.start_connections;
+    d->lock = cdm_mutex_create();
+    if (!d->url || !d->lock) { cdm_download_destroy(d); return NULL; }
+    return d;
+}
+
+void cdm_download_set_progress_cb(cdm_download *d, cdm_progress_cb cb, void *user) {
+    d->progress_cb = cb;
+    d->progress_user = user;
+}
+
+void cdm_download_cancel(cdm_download *d) { if (d) d->cancel = 1; }
+
+const char *cdm_download_output_path(const cdm_download *d) {
+    return d ? d->output_path : NULL;
+}
+
+/* Build the chunk table for a fresh (non-resumed) download. */
+static cdm_status plan_chunks(cdm_download *d) {
+    if (d->single_stream || d->total_bytes < 0) {
+        d->chunk_count = 1;
+        d->chunks = calloc(1, sizeof(cdm_chunk));
+        if (!d->chunks) return CDM_ERR_NOMEM;
+        d->chunks[0].offset = 0;
+        d->chunks[0].length = d->total_bytes < 0 ? 0 : d->total_bytes;
+        d->chunks[0].state = CHUNK_PENDING;
+        return CDM_OK;
+    }
+
+    int64_t csz = d->cfg.chunk_size;
+    int64_t n = (d->total_bytes + csz - 1) / csz;
+    if (n < 1) n = 1;
+    if (n > 4096) { /* cap chunk count; grow chunk size */
+        csz = (d->total_bytes + 4095) / 4096;
+        n = (d->total_bytes + csz - 1) / csz;
+    }
+
+    d->chunks = calloc((size_t)n, sizeof(cdm_chunk));
+    if (!d->chunks) return CDM_ERR_NOMEM;
+    d->chunk_count = (int)n;
+    for (int64_t i = 0; i < n; i++) {
+        int64_t off = i * csz;
+        int64_t len = csz;
+        if (off + len > d->total_bytes) len = d->total_bytes - off;
+        d->chunks[i].offset = off;
+        d->chunks[i].length = len;
+        d->chunks[i].state = CHUNK_PENDING;
+    }
+    return CDM_OK;
+}
+
+static cdm_status resolve_paths(cdm_download *d) {
+    const char *out = d->cfg.output_path;
+    if (out && *out) {
+        d->output_path = dup_str(out);
+    } else {
+        d->output_path = dup_str(d->probe.filename[0] ? d->probe.filename
+                                                      : "download.bin");
+    }
+    if (!d->output_path) return CDM_ERR_NOMEM;
+    d->part_path = join_suffix(d->output_path, ".part");
+    d->meta_path = join_suffix(d->output_path, ".cdm");
+    if (!d->part_path || !d->meta_path) return CDM_ERR_NOMEM;
+    return CDM_OK;
+}
+
+static cdm_status alloc_transfers(cdm_download *d) {
+    d->transfer_cap = d->cfg.max_connections;
+    d->transfers = calloc((size_t)d->transfer_cap, sizeof(cdm_transfer));
+    if (!d->transfers) return CDM_ERR_NOMEM;
+    for (int i = 0; i < d->transfer_cap; i++) {
+        d->transfers[i].easy = curl_easy_init();
+        d->transfers[i].d = d;
+        if (!d->transfers[i].easy) return CDM_ERR_INTERNAL;
+    }
+    return CDM_OK;
+}
+
+cdm_status cdm_download_run(cdm_download *d) {
+    if (!d) return CDM_ERR_ARG;
+
+    cdm_status st = cdm_probe_url(d->url, &d->cfg, &d->probe);
+    if (st != CDM_OK) return st;
+
+    d->total_bytes = d->probe.size;
+    d->single_stream = !d->probe.accept_ranges || d->total_bytes < 0;
+
+    st = resolve_paths(d);
+    if (st != CDM_OK) return st;
+
+    st = plan_chunks(d);
+    if (st != CDM_OK) return st;
+
+    /* Try to resume from an existing sidecar + .part file. */
+    if (d->cfg.resume && cdm_file_exists(d->part_path) &&
+        cdm_file_exists(d->meta_path)) {
+        cdm_meta_load(d); /* on failure we keep the fresh plan */
+    }
+
+    d->file = cdm_file_open_rw(d->part_path);
+    if (!d->file) return CDM_ERR_IO;
+
+    if (d->total_bytes > 0) {
+        if (cdm_file_preallocate(d->file, d->total_bytes) != 0) {
+            /* non-fatal: some filesystems disallow; writes still extend */
+        }
+    }
+
+    st = alloc_transfers(d);
+    if (st != CDM_OK) { cdm_file_close(d->file); d->file = NULL; return st; }
+
+    st = cdm_run_transfers(d);
+
+    cdm_file_close(d->file);
+    d->file = NULL;
+
+    if (st != CDM_OK) {
+        cdm_meta_save(d); /* keep progress for a later resume */
+        return st;
+    }
+
+    /* Size gate. */
+    if (d->total_bytes > 0) {
+        cdm_file *chk = cdm_file_open_rw(d->part_path);
+        int64_t actual = chk ? cdm_file_size(chk) : -1;
+        if (chk) cdm_file_close(chk);
+        if (actual != d->total_bytes) return CDM_ERR_INTEGRITY;
+    }
+
+    /* Optional checksum gate before promoting the file. */
+    if (d->cfg.expected_sha256 && *d->cfg.expected_sha256) {
+        st = cdm_verify_sha256(d->part_path, d->cfg.expected_sha256);
+        if (st != CDM_OK) return st;
+    }
+
+    /* Promote .part -> final and drop the sidecar. */
+    cdm_remove(d->output_path);
+    if (cdm_rename(d->part_path, d->output_path) != 0) return CDM_ERR_IO;
+    cdm_meta_delete(d);
+    return CDM_OK;
+}
+
+void cdm_download_destroy(cdm_download *d) {
+    if (!d) return;
+    if (d->transfers) {
+        for (int i = 0; i < d->transfer_cap; i++) {
+            if (d->transfers[i].headers)
+                curl_slist_free_all(d->transfers[i].headers);
+            if (d->transfers[i].easy)
+                curl_easy_cleanup(d->transfers[i].easy);
+        }
+        free(d->transfers);
+    }
+    if (d->file) cdm_file_close(d->file);
+    free(d->chunks);
+    free(d->url);
+    free(d->output_path);
+    free(d->part_path);
+    free(d->meta_path);
+    if (d->lock) cdm_mutex_destroy(d->lock);
+    free(d);
+}

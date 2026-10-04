@@ -1,0 +1,14 @@
+# Build outputs
+build/
+build-cmake/
+*.o
+
+# Packaged artifacts (distribute via GitHub Releases instead)
+*.deb
+
+# Runtime download folders created by the app
+downloads/
+
+# Editor / OS noise
+.vscode/
+.DS_Store
