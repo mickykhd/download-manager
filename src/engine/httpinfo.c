@@ -33,9 +33,23 @@ static int hdr_match(const char *line, const char *name, const char **val) {
     return 0;
 }
 
+/* Portable case-insensitive substring search (strcasestr is GNU-only and
+ * missing from MSVC/MinGW headers). */
+static const char *cistrstr(const char *hay, const char *needle) {
+    if (!*needle) return hay;
+    for (; *hay; hay++) {
+        const char *h = hay, *n = needle;
+        while (*n && tolower((unsigned char)*h) == tolower((unsigned char)*n)) {
+            h++; n++;
+        }
+        if (!*n) return hay;
+    }
+    return NULL;
+}
+
 /* Extract filename from a Content-Disposition value. */
 static void parse_disposition(const char *v, char *out, size_t cap) {
-    const char *f = strcasestr(v, "filename");
+    const char *f = cistrstr(v, "filename");
     if (!f) return;
     f += 8;
     if (*f == '*') { /* filename*=UTF-8''name */
