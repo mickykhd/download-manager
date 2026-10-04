@@ -29,7 +29,6 @@
 #define CDM_IPC_PORT 8765
 #endif
 #if defined(__linux__) || defined(__unix__)
-#include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -324,18 +323,18 @@ static void draw_list(struct nk_context *ctx, int *active, double *total_speed) 
             nk_label(ctx, hdr[c], NK_TEXT_LEFT); }
         nk_layout_row_end(ctx);
 
-        pthread_mutex_lock(&g_mgr->mtx);
+        cdm_mutex_lock(g_mgr->mtx);
         for (int i = 0; i < g_mgr->count; i++) {
             cdm_job *job = g_mgr->jobs[i];
             if (g_cat_filter >= 0 && job->cat_idx != g_cat_filter) continue;
 
             cdm_progress p;
-            pthread_mutex_lock(&job->mtx);
+            cdm_mutex_lock(job->mtx);
             p = job->prog;
             int st = job->state;
             int queued = job->queued;
             int sched = (job->sched_epoch > 0);
-            pthread_mutex_unlock(&job->mtx);
+            cdm_mutex_unlock(job->mtx);
 
             if (st == JOB_RUNNING) { (*active)++; *total_speed += p.speed_bps; }
 
@@ -370,7 +369,7 @@ static void draw_list(struct nk_context *ctx, int *active, double *total_speed) 
             { char q[4]; snprintf(q,sizeof q,"%s", queued?"Q":(sched?"S":"-")); nk_label(ctx,q,NK_TEXT_LEFT); }
             nk_layout_row_end(ctx);
         }
-        pthread_mutex_unlock(&g_mgr->mtx);
+        cdm_mutex_unlock(g_mgr->mtx);
         nk_group_end(ctx);
     }
 }
@@ -555,7 +554,7 @@ static void draw_sched_modal(struct nk_context *ctx) {
     if (nk_begin(ctx, "Scheduler", r, NK_WINDOW_TITLE|NK_WINDOW_BORDER|NK_WINDOW_MOVABLE)) {
         nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, "Scheduled / queued downloads:", NK_TEXT_LEFT);
         char line[256];
-        pthread_mutex_lock(&g_mgr->mtx);
+        cdm_mutex_lock(g_mgr->mtx);
         for (int i=0;i<g_mgr->count;i++) {
             cdm_job *job = g_mgr->jobs[i];
             if (job->state != JOB_QUEUED) continue;
@@ -570,19 +569,19 @@ static void draw_sched_modal(struct nk_context *ctx) {
             }
             nk_layout_row_dynamic(ctx, 20, 1); nk_label(ctx, line, NK_TEXT_LEFT);
         }
-        pthread_mutex_unlock(&g_mgr->mtx);
+        cdm_mutex_unlock(g_mgr->mtx);
         nk_layout_row_dynamic(ctx, 26, 1);
         nk_label(ctx, "Start all queued now:", NK_TEXT_LEFT);
         nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
         nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "Start now")) {
-            pthread_mutex_lock(&g_mgr->mtx);
+            cdm_mutex_lock(g_mgr->mtx);
             for (int i=0;i<g_mgr->count;i++) {
                 cdm_job *job=g_mgr->jobs[i];
-                if (job->state==JOB_QUEUED) { pthread_mutex_lock(&job->mtx);
-                    job->sched_epoch=0; pthread_mutex_unlock(&job->mtx); }
+                if (job->state==JOB_QUEUED) { cdm_mutex_lock(job->mtx);
+                    job->sched_epoch=0; cdm_mutex_unlock(job->mtx); }
             }
-            pthread_mutex_unlock(&g_mgr->mtx);
+            cdm_mutex_unlock(g_mgr->mtx);
         }
         nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "Close")) g_show_sched=0;

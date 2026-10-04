@@ -12,7 +12,6 @@
 #define CDM_UNIT_TEST
 #include "../src/ui/gui.c"
 
-#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -48,10 +47,12 @@ static void reset_ctx(void) {
     memset(&g_ctx, 0, sizeof g_ctx);
     nk_init_default(&g_ctx, &g_font->handle);
     nk_style_set_font(&g_ctx, &g_font->handle);
+    if (g_fake.mtx) { cdm_mutex_destroy(g_fake.mtx); g_fake.mtx = NULL; }
+    if (g_job.mtx) { cdm_mutex_destroy(g_job.mtx); g_job.mtx = NULL; }
     memset(&g_fake, 0, sizeof g_fake);
     memset(&g_job, 0, sizeof g_job);
-    pthread_mutex_init(&g_fake.mtx, NULL);
-    pthread_mutex_init(&g_job.mtx, NULL);
+    g_fake.mtx = cdm_mutex_create();
+    g_job.mtx = cdm_mutex_create();
     g_fake.selected_id = -1;
     g_fake.n_cats = 1;
     strcpy(g_fake.cats[0].name, "General");
@@ -131,8 +132,8 @@ int main(void) {
     }
     nk_end(&g_ctx);
 
-    pthread_mutex_destroy(&g_fake.mtx);
-    pthread_mutex_destroy(&g_job.mtx);
+    cdm_mutex_destroy(g_fake.mtx); g_fake.mtx = NULL;
+    cdm_mutex_destroy(g_job.mtx); g_job.mtx = NULL;
 
     /* Case 3: selectable contrast per theme (regression: light theme had
      * black text on Nuklear's default dark selectable background). */

@@ -32,6 +32,29 @@ void cdm_thread_join(cdm_thread *t) {
     free(t);
 }
 
+struct cdm_detached_arg { cdm_thread_fn fn; void *arg; };
+
+static DWORD WINAPI detached_trampoline(LPVOID p) {
+    struct cdm_detached_arg *da = (struct cdm_detached_arg *)p;
+    cdm_thread_fn fn = da->fn;
+    void *arg = da->arg;
+    free(da);
+    fn(arg);
+    return 0;
+}
+
+int cdm_thread_spawn_detached(cdm_thread_fn fn, void *arg) {
+    if (!fn) return -1;
+    struct cdm_detached_arg *da = (struct cdm_detached_arg *)calloc(1, sizeof(*da));
+    if (!da) return -1;
+    da->fn = fn;
+    da->arg = arg;
+    HANDLE h = CreateThread(NULL, 0, detached_trampoline, da, 0, NULL);
+    if (!h) { free(da); return -1; }
+    CloseHandle(h); /* detached: no join; thread frees its own args */
+    return 0;
+}
+
 cdm_mutex *cdm_mutex_create(void) {
     cdm_mutex *m = calloc(1, sizeof(*m));
     if (!m) return NULL;

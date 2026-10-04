@@ -17,7 +17,6 @@
 #define CDM_UNIT_TEST
 #include "../src/ui/gui.c"
 
-#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -54,8 +53,9 @@ static void reset_ctx(void) {
     memset(&g_ctx, 0, sizeof g_ctx);
     nk_init_default(&g_ctx, &g_font->handle);
     nk_style_set_font(&g_ctx, &g_font->handle);
+    if (g_fake.mtx) { cdm_mutex_destroy(g_fake.mtx); g_fake.mtx = NULL; }
     memset(&g_fake, 0, sizeof g_fake);
-    pthread_mutex_init(&g_fake.mtx, NULL); /* draw_body locks the manager */
+    g_fake.mtx = cdm_mutex_create(); /* draw_body locks the manager */
     g_fake.selected_id = -1; /* no selection -> menu actions are no-ops */
     g_mgr = &g_fake;
     apply_theme(&g_ctx);

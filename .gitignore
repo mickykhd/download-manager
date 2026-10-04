@@ -1,11 +1,14 @@
 # Build outputs
 build/
 build-cmake/
+install/
 *.o
 
 # Packaged artifacts (distribute via GitHub Releases instead)
 *.deb
 *.exe
+*.zip
+*.msi
 
 # Runtime download folders created by the app
 downloads/

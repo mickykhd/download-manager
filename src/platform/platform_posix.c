@@ -41,6 +41,33 @@ void cdm_thread_join(cdm_thread *t) {
     free(t);
 }
 
+struct cdm_detached_arg { cdm_thread_fn fn; void *arg; };
+
+static void *detached_trampoline(void *p) {
+    struct cdm_detached_arg *da = (struct cdm_detached_arg *)p;
+    cdm_thread_fn fn = da->fn;
+    void *arg = da->arg;
+    free(da);
+    fn(arg);
+    return NULL;
+}
+
+int cdm_thread_spawn_detached(cdm_thread_fn fn, void *arg) {
+    if (!fn) return -1;
+    struct cdm_detached_arg *da = malloc(sizeof(*da));
+    if (!da) return -1;
+    da->fn = fn;
+    da->arg = arg;
+    pthread_t th;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    int rc = pthread_create(&th, &attr, detached_trampoline, da);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) { free(da); return -1; }
+    return 0;
+}
+
 cdm_mutex *cdm_mutex_create(void) {
     cdm_mutex *m = calloc(1, sizeof(*m));
     if (!m) return NULL;

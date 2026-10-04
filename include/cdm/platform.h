@@ -24,6 +24,8 @@ typedef void *(*cdm_thread_fn)(void *arg);
 /* Threads */
 cdm_thread *cdm_thread_start(cdm_thread_fn fn, void *arg);
 void cdm_thread_join(cdm_thread *t);
+/* Fire-and-forget thread (detached). No join needed; returns 0 on success. */
+int cdm_thread_spawn_detached(cdm_thread_fn fn, void *arg);
 
 /* Mutex */
 cdm_mutex *cdm_mutex_create(void);

@@ -16,10 +16,20 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <process.h>
+#define getpid _getpid
 #define MKDIR(d) _mkdir(d)
 static void set_cfg(const char *v) {
     if (v) { char buf[2048]; snprintf(buf, sizeof buf, "XDG_CONFIG_HOME=%s", v);
              _putenv(buf); }
+    else { _putenv("XDG_CONFIG_HOME="); }
+}
+static void make_tmp(char *out, size_t cap) {
+    const char *base = getenv("TEMP");
+    if (!base || !*base) base = getenv("TMP");
+    if (!base || !*base) base = ".";
+    snprintf(out, cap, "%s\\cdm-settings-test-%d", base, (int)getpid());
+    MKDIR(out);
 }
 #else
 #include <sys/stat.h>
@@ -28,6 +38,10 @@ static void set_cfg(const char *v) {
 static void set_cfg(const char *v) {
     if (v) setenv("XDG_CONFIG_HOME", v, 1);
     else unsetenv("XDG_CONFIG_HOME");
+}
+static void make_tmp(char *out, size_t cap) {
+    snprintf(out, cap, "/tmp/cdm-settings-test-%d", (int)getpid());
+    MKDIR(out);
 }
 #endif
 
@@ -46,8 +60,7 @@ static int file_exists(const char *p) {
 
 int main(void) {
     char tmp[256];
-    snprintf(tmp, sizeof(tmp), "/tmp/cdm-settings-test-%d", (int)getpid());
-    MKDIR(tmp);
+    make_tmp(tmp, sizeof(tmp));
     set_cfg(tmp);
 
     /* 1. Missing file -> defaults, and max_active applied to the manager. */
@@ -87,6 +100,8 @@ int main(void) {
         char path[300];
         snprintf(path, sizeof(path), "%s/cdm/settings.conf", tmp);
         FILE *f = fopen(path, "wb");
+        CHECK(f != NULL, "clamp fixture writable");
+        if (!f) return 1;
         fputs("CDM-SETTINGS1\nmax_active 99\ntheme -5\nskin 7\n"
               "future_knob 123\n", f);
         fclose(f);
@@ -103,6 +118,8 @@ int main(void) {
         char path[300];
         snprintf(path, sizeof(path), "%s/cdm/settings.conf", tmp);
         FILE *f = fopen(path, "wb");
+        CHECK(f != NULL, "corrupt fixture writable");
+        if (!f) return 1;
         fputs("garbage{{\nmax_active 9\n", f);
         fclose(f);
         cdm_manager *m = cdm_manager_create();

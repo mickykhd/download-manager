@@ -2,7 +2,7 @@
 #define CDM_MANAGER_H
 
 #include "cdm/download.h"
-#include <pthread.h>
+#include "cdm/platform.h"
 #include <time.h>
 
 typedef enum {
@@ -37,9 +37,8 @@ typedef struct cdm_job {
     int cat_idx;         /* category index (-1 unknown) */
 
     /* runtime */
-    pthread_t thread;
     int running;          /* worker thread alive */
-    pthread_mutex_t mtx;
+    cdm_mutex *mtx;
 } cdm_job;
 
 typedef struct {
@@ -58,7 +57,7 @@ typedef struct {
     int n_cats;
     int max_active;       /* queue concurrency limit (0 = unlimited) */
 
-    pthread_mutex_t mtx;
+    cdm_mutex *mtx;
 } cdm_manager;
 
 cdm_manager *cdm_manager_create(void);

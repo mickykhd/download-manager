@@ -4,8 +4,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <strings.h>
+#endif
 #include <ctype.h>
+
+/* Portable case-insensitive compare (strncasecmp is POSIX-only, missing on MSVC). */
+static int cdm_strncasecmp(const char *a, const char *b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        unsigned char ca = (unsigned char)tolower((unsigned char)a[i]);
+        unsigned char cb = (unsigned char)tolower((unsigned char)b[i]);
+        if (ca != cb) return (int)ca - (int)cb;
+        if (ca == 0) return 0;
+    }
+    return 0;
+}
 
 /* Collected header values during probe. */
 typedef struct {
@@ -24,7 +37,7 @@ static void trim(char *s) {
 
 static int hdr_match(const char *line, const char *name, const char **val) {
     size_t nl = strlen(name);
-    if (strncasecmp(line, name, nl) == 0 && line[nl] == ':') {
+    if (cdm_strncasecmp(line, name, nl) == 0 && line[nl] == ':') {
         const char *v = line + nl + 1;
         while (*v == ' ' || *v == '\t') v++;
         *val = v;
@@ -77,7 +90,7 @@ static size_t header_cb(char *buf, size_t size, size_t nitems, void *userp) {
 
     const char *v;
     if (hdr_match(line, "Accept-Ranges", &v)) {
-        if (strncasecmp(v, "bytes", 5) == 0) ctx->p->accept_ranges = 1;
+        if (cdm_strncasecmp(v, "bytes", 5) == 0) ctx->p->accept_ranges = 1;
     } else if (hdr_match(line, "ETag", &v)) {
         /* Only keep strong validators (reject weak W/ prefixed). */
         if (!(v[0] == 'W' && v[1] == '/')) {
