@@ -5,6 +5,7 @@ build-cmake/
 
 # Packaged artifacts (distribute via GitHub Releases instead)
 *.deb
+*.exe
 
 # Runtime download folders created by the app
 downloads/
