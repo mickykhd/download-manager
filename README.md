@@ -90,12 +90,22 @@ Example:
 The GUI needs OpenGL + GLEW + GLFW, which are not present on a vanilla
 Windows box — that is why `CDM_BUILD_GUI` defaults to `OFF` on Windows
 (and a configure with missing deps now skips `cdm-gui` with a warning
-instead of failing). To build it, install GLFW/GLEW first, then:
+instead of failing). To build it on Windows, install the deps with
+[vcpkg](https://vcpkg.io/) first (OpenGL itself comes from the Windows SDK):
 
 ```powershell
-cmake -S . -B build -DCDM_BUILD_GUI=ON -DCDM_FETCH_CURL=ON
+git clone https://github.com/microsoft/vcpkg.git D:\vcpkg
+D:\vcpkg\bootstrap-vcpkg.bat
+D:\vcpkg\vcpkg.exe install glfw3 glew --triplet x64-windows
+
+cmake -S . -B build -DCDM_BUILD_GUI=ON -DCDM_FETCH_CURL=ON `
+  -DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake
 cmake --build build --config Release
 ```
+
+This produces `build/Release/cdm-gui.exe` (plus `glew32.dll` and
+`glfw3.dll` next to it — keep them together). Unlike `cdm.exe`,
+`cdm-gui.exe` is a real windowed app, so double-clicking it works.
 
 ## Packaging
 
