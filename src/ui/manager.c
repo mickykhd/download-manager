@@ -275,6 +275,9 @@ void cdm_settings_default(cdm_settings *s) {
     s->max_active = 3;
     s->theme = 0;
     s->skin = 0;
+    s->api_enabled = 0;
+    s->api_port = 0;
+    s->api_key[0] = 0;
 }
 
 static int clamp_int(int v, int lo, int hi) {
@@ -336,6 +339,17 @@ void cdm_settings_load(cdm_manager *m, cdm_settings *s) {
                     r->max_speed_bps = sp >= 0 ? (int64_t)sp : 0;
                     snprintf(r->user_agent, sizeof(r->user_agent), "%s", ua);
                 }
+            } else if (strncmp(line, "api_key ", 8) == 0) {
+                char *v = line + 8;
+                while (*v == ' ' || *v == '\t') v++;
+                {
+                    size_t n = strlen(v);
+                    while (n > 0 && (v[n-1] == '\r' || v[n-1] == '\n' ||
+                                     v[n-1] == ' ' || v[n-1] == '\t')) n--;
+                    if (n >= sizeof(s->api_key)) n = sizeof(s->api_key) - 1;
+                    memcpy(s->api_key, v, n);
+                    s->api_key[n] = 0;
+                }
             } else if (m && strncmp(line, "proxy_url ", 10) == 0) {
                 char *v = line + 10;
                 while (*v == ' ' || *v == '\t') v++;
@@ -363,6 +377,10 @@ void cdm_settings_load(cdm_manager *m, cdm_settings *s) {
             if (m && val >= CDM_PROXY_DIRECT && val <= CDM_PROXY_MANUAL)
                 m->proxy_mode = val;
         }
+        else if (strcmp(key, "api_enabled") == 0)
+            s->api_enabled = val ? 1 : 0;
+        else if (strcmp(key, "api_port") == 0)
+            s->api_port = (val > 0 && val < 65536) ? val : 0;
         /* unknown keys ignored for forward compatibility */
     }
     fclose(f);
@@ -399,6 +417,10 @@ int cdm_settings_save(const cdm_manager *m, const cdm_settings *s) {
     fprintf(f, "max_active %d\n", clamp_int(s->max_active, 0, CDM_SETTINGS_MAX_ACTIVE));
     fprintf(f, "theme %d\n", clamp_int(s->theme, 0, 1));
     fprintf(f, "skin %d\n", clamp_int(s->skin, 0, 3));
+    fprintf(f, "api_enabled %d\n", s->api_enabled ? 1 : 0);
+    fprintf(f, "api_port %d\n", s->api_port);
+    if (s->api_key[0])
+        fprintf(f, "api_key %s\n", s->api_key);
     if (m) {
         fprintf(f, "default_queue %d\n", m->default_queue);
         for (int i = 1; i < m->n_queues; i++) {
@@ -724,6 +746,32 @@ int cdm_manager_edit_net(cdm_manager *m, int id, const char *user_agent,
     }
     cdm_mutex_unlock(m->mtx);
     return rc;
+}
+
+void cdm_manager_push_url(cdm_manager *m, const char *url) {
+    if (!m || !url || !*url) return;
+    cdm_mutex_lock(m->mtx);
+    if (m->n_pending < CDM_MAX_PENDING_URLS) {
+        snprintf(m->pending_urls[m->n_pending],
+                 sizeof(m->pending_urls[0]), "%s", url);
+        m->n_pending++;
+    }
+    cdm_mutex_unlock(m->mtx);
+}
+
+int cdm_manager_poll_urls(cdm_manager *m, char out[][2048], int cap) {
+    int n = 0;
+    if (!m || !out || cap <= 0) return 0;
+    cdm_mutex_lock(m->mtx);
+    while (m->n_pending > 0 && n < cap) {
+        snprintf(out[n], 2048, "%s", m->pending_urls[0]);
+        memmove(&m->pending_urls[0], &m->pending_urls[1],
+                (size_t)(m->n_pending - 1) * sizeof(m->pending_urls[0]));
+        m->n_pending--;
+        n++;
+    }
+    cdm_mutex_unlock(m->mtx);
+    return n;
 }
 
 void cdm_manager_set_proxy(cdm_manager *m, int mode, const char *url) {

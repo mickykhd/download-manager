@@ -1,4 +1,5 @@
 #include "cdm/download.h"
+#include "register.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,7 +69,11 @@ static void usage(const char *prog) {
         "  -C            disable resume\n"
         "  -S <sha256>   verify downloaded file against hex digest\n"
         "  -q            quiet (no progress bar)\n"
-        "  -h            show this help\n",
+        "  -h            show this help\n"
+  "  --register-native-host [chrome|edge|firefox|all]\n"
+  "                  install browser native-messaging manifests\n"
+  "  --unregister-native-host [which]\n"
+  "                  remove browser native-messaging manifests\n",
         prog);
 }
 
@@ -79,6 +84,14 @@ int main(int argc, char **argv) {
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
+        if (strcmp(a, "--register-native-host") == 0) {
+            const char *which = (i + 1 < argc && argv[i+1][0] != '-') ? argv[++i] : "all";
+            return cdm_register_native_host(which) == 0 ? 0 : 1;
+        }
+        if (strcmp(a, "--unregister-native-host") == 0) {
+            const char *which = (i + 1 < argc && argv[i+1][0] != '-') ? argv[++i] : "all";
+            return cdm_unregister_native_host(which) == 0 ? 0 : 1;
+        }
         if (a[0] == '-' && a[1] && !a[2]) {
             char f = a[1];
             if (f == 'h') { usage(argv[0]); return 0; }

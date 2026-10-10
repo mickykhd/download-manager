@@ -105,7 +105,8 @@ if(WIN32)
 endif()
 
 # --- CLI executable ---
-add_executable(cdm src/cli/main.c ${CDM_WIN_RES_cdm})
+add_executable(cdm src/cli/main.c src/cli/register.c ${CDM_WIN_RES_cdm})
+target_include_directories(cdm PRIVATE src/cli)
 target_link_libraries(cdm PRIVATE cdmcore)
 
 # --- GUI executable (Nuklear + GLFW/OpenGL) ---
@@ -126,6 +127,7 @@ if(CDM_BUILD_GUI)
         add_executable(cdm-gui
             src/ui/gui.c
             src/ui/manager.c
+            src/ui/ipc.c
             ${CDM_WIN_RES_cdm-gui}
         )
         target_include_directories(cdm-gui PRIVATE
@@ -191,7 +193,19 @@ target_include_directories(test_net PRIVATE include src/engine src/ui)
 target_link_libraries(test_net PRIVATE cdmcore)
 add_test(NAME test_net COMMAND test_net)
 
-install(TARGETS cdm RUNTIME DESTINATION bin)
+add_executable(test_ipc tests/test_ipc.c src/ui/manager.c src/ui/ipc.c)
+target_include_directories(test_ipc PRIVATE include src/engine src/ui)
+target_link_libraries(test_ipc PRIVATE cdmcore)
+add_test(NAME test_ipc COMMAND test_ipc)
+
+# --- Native-messaging host (stdio JSON bridge for browser extensions) ---
+add_executable(cdm-native-host src/cli/native_host.c)
+target_link_libraries(cdm-native-host PRIVATE cdmcore)
+if(WIN32)
+    target_sources(cdm-native-host PRIVATE ${CDM_WIN_RES_cdm})
+endif()
+
+install(TARGETS cdm cdm-native-host RUNTIME DESTINATION bin)
 
 # --- Packaging (Windows installer via CPack: ZIP always, NSIS when available) ---
 set(CPACK_PACKAGE_NAME "cdm-download-manager")

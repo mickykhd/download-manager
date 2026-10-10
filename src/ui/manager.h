@@ -8,6 +8,7 @@
 #define CDM_MAX_QUEUES 8
 #define CDM_MAX_HOSTS 16
 #define CDM_MAX_JOB_HEADERS 32
+#define CDM_MAX_PENDING_URLS 16
 
 typedef enum {
     JOB_QUEUED,    /* waiting in queue / for schedule */
@@ -79,7 +80,7 @@ typedef struct {
     char user_agent[256];/* empty = default */
 } cdm_host_rule;
 
-typedef struct {
+typedef struct cdm_manager {
     cdm_job **jobs;
     int count;
     int capacity;
@@ -99,6 +100,10 @@ typedef struct {
     char proxy_url[512];  /* manual mode */
     cdm_host_rule hosts[CDM_MAX_HOSTS];
     int n_hosts;
+
+    /* inbox for URLs fed by the integration server; the UI drains it */
+    char pending_urls[CDM_MAX_PENDING_URLS][2048];
+    int n_pending;
 
     cdm_mutex *mtx;
 } cdm_manager;
@@ -167,6 +172,11 @@ const cdm_host_rule *cdm_manager_host_for_url(cdm_manager *m, const char *url);
 int cdm_parse_headers(const char *text, char *blob, size_t bcap,
                       const char **ptrs, int pcap);
 
+/* Integration inbox: queue a URL for the UI thread (drops when full),
+ * and drain all pending URLs into out (returns count). */
+void cdm_manager_push_url(cdm_manager *m, const char *url);
+int cdm_manager_poll_urls(cdm_manager *m, char out[][2048], int cap);
+
 /* Scheduler: promote queued jobs whose slot/time has arrived. */
 void cdm_manager_pump(cdm_manager *m);
 
@@ -189,6 +199,9 @@ typedef struct {
     int max_active;  /* max concurrent downloads; 0 = unlimited */
     int theme;       /* 0 dark, 1 light */
     int skin;        /* 0 blue, 1 teal, 2 red, 3 purple */
+    int api_enabled; /* local integration server on/off */
+    int api_port;    /* 0 = default (15151) */
+    char api_key[128]; /* empty = no auth */
 } cdm_settings;
 
 void cdm_settings_default(cdm_settings *s);

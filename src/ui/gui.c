@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L /* localtime_r under strict -std=c11 */
 #endif
 #include "manager.h"
+#include "ipc.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -116,6 +117,9 @@ static int  g_batch_queue = 0;
 static int g_show_queues = 0;
 static char g_newq_name[64] = {0}; static int g_newq_name_len = 0;
 static int g_show_net = 0;
+static int g_api_enabled = 0;
+static char g_api_port[16] = {0}; static int g_api_port_len = 0;
+static char g_api_key[128] = {0}; static int g_api_key_len = 0;
 static int g_net_proxy = CDM_PROXY_SYSTEM;
 static char g_net_proxy_url[512] = {0}; static int g_net_proxy_url_len = 0;
 static char g_newhost[256] = {0}; static int g_newhost_len = 0;
@@ -144,6 +148,7 @@ static int g_cat_filter = -1; /* -1 = all */
 
 static void open_edit(cdm_job *j); /* defined after draw_toolbar */
 static void persist_settings(void); /* defined with the modals */
+static void restart_ipc_server(void); /* defined with the modals */
 
 /* local IPC (browser native-messaging -> running app) */
 static int g_ipc_sock = -1;
@@ -384,9 +389,37 @@ static char g_host_speed[32] = {0}; static int g_host_speed_len = 0;
 static char g_host_ua[256] = {0}; static int g_host_ua_len = 0;
 
 static void draw_net_modal(struct nk_context *ctx, int win_w, int win_h) {
-    struct nk_rect r = nk_rect(win_w/2 - 300, win_h/2 - 240, 600, 480);
+    struct nk_rect r = nk_rect(win_w/2 - 300, win_h/2 - 260, 600, 520);
     if (nk_begin(ctx, "Network", r,
                  NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_MOVABLE)) {
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 24, 2);
+        nk_layout_row_push(ctx, 0.7f);
+        nk_checkbox_label(ctx, "Browser integration server", &g_api_enabled);
+        nk_layout_row_push(ctx, 0.3f);
+        { char st[32];
+          int p = cdm_ipc_port();
+          snprintf(st, sizeof st, "%s", p > 0 ? "running" : "stopped");
+          nk_label(ctx, st, NK_TEXT_LEFT); }
+        nk_layout_row_end(ctx);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 3);
+        nk_layout_row_push(ctx, 0.3f); nk_label(ctx, "Port (0=auto):", NK_TEXT_LEFT);
+        nk_layout_row_push(ctx, 0.3f);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_api_port, &g_api_port_len,
+                       sizeof(g_api_port)-1, nk_filter_decimal);
+        nk_layout_row_push(ctx, 0.4f);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_api_key, &g_api_key_len,
+                       sizeof(g_api_key)-1, nk_filter_default);
+        nk_layout_row_end(ctx);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
+        nk_layout_row_push(ctx, 0.5f);
+        nk_label(ctx, "Key (optional, X-Api-Key):", NK_TEXT_LEFT);
+        nk_layout_row_push(ctx, 0.5f);
+        if (nk_button_label(ctx, "Apply server")) {
+            persist_settings();
+            restart_ipc_server();
+        }
+        nk_layout_row_end(ctx);
+
         nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, "Proxy:", NK_TEXT_LEFT);
         nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 2);
         nk_layout_row_push(ctx, 0.4f);
@@ -817,7 +850,20 @@ static void persist_settings(void) {
     st.max_active = g_mgr->max_active;
     st.theme = g_theme;
     st.skin = g_skin;
+    st.api_enabled = g_api_enabled;
+    st.api_port = atoi(g_api_port);
+    if (st.api_port < 0 || st.api_port > 65535) st.api_port = 0;
+    snprintf(st.api_key, sizeof(st.api_key), "%s", g_api_key);
     cdm_settings_save(g_mgr, &st);
+}
+
+static void restart_ipc_server(void) {
+    cdm_ipc_stop();
+    if (g_api_enabled) {
+        int port = atoi(g_api_port);
+        if (port <= 0 || port > 65535) port = 0; /* default */
+        cdm_ipc_start(g_mgr, port, g_api_key);
+    }
 }
 
 static void draw_queues_modal(struct nk_context *ctx, int win_w, int win_h) {
@@ -1148,6 +1194,17 @@ int main(int argc, char **argv) {
         cdm_settings_load(g_mgr, &st);
         g_theme = st.theme;
         g_skin = st.skin;
+        g_api_enabled = st.api_enabled;
+        if (st.api_port > 0) {
+            snprintf(g_api_port, sizeof(g_api_port), "%d", st.api_port);
+            g_api_port_len = (int)strlen(g_api_port);
+        }
+        snprintf(g_api_key, sizeof(g_api_key), "%s", st.api_key);
+        g_api_key_len = (int)strlen(g_api_key);
+        g_net_proxy = g_mgr->proxy_mode;
+        snprintf(g_net_proxy_url, sizeof(g_net_proxy_url), "%s", g_mgr->proxy_url);
+        g_net_proxy_url_len = (int)strlen(g_net_proxy_url);
+        restart_ipc_server();
     }
 
     if (argc > 1) {
@@ -1214,6 +1271,28 @@ int main(int argc, char **argv) {
         cdm_manager_pump(g_mgr);
         cdm_manager_reap(g_mgr);
 
+        /* URLs fed by the integration server -> open Add / Batch dialogs */
+        {
+            static char urls[CDM_MAX_PENDING_URLS][2048];
+            int n = cdm_manager_poll_urls(g_mgr, urls, CDM_MAX_PENDING_URLS);
+            if (n == 1) {
+                snprintf(g_url, sizeof(g_url), "%s", urls[0]);
+                g_url_len = (int)strlen(g_url);
+                g_show_add = 1;
+            } else if (n > 1) {
+                size_t off = 0;
+                g_batch[0] = 0;
+                for (int i = 0; i < n && off + 1 < sizeof(g_batch); i++) {
+                    int w = snprintf(g_batch + off, sizeof(g_batch) - off,
+                                     "%s%s", i ? "\n" : "", urls[i]);
+                    if (w < 0) break;
+                    off += (size_t)w;
+                }
+                g_batch_len = (int)strlen(g_batch);
+                g_show_batch = 1;
+            }
+        }
+
         glClearColor(g_theme?0.92f:0.13f, g_theme?0.92f:0.14f, g_theme?0.92f:0.16f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         nk_glfw3_render(&nk, NK_ANTI_ALIASING_ON, 512*1024, 128*1024);
@@ -1224,6 +1303,7 @@ int main(int argc, char **argv) {
     /* Persist Options so they survive a restart (covers theme/skin picked
      * via combo without pressing Apply). */
     persist_settings();
+    cdm_ipc_stop();
     cdm_manager_destroy(g_mgr);
     cdm_global_cleanup();
     glfwTerminate();
