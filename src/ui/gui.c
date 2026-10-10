@@ -129,6 +129,8 @@ static int  g_batch_queue = 0;
 
 static int g_show_queues = 0;
 static char g_newq_name[64] = {0}; static int g_newq_name_len = 0;
+static int g_show_cats = 0;
+static char g_newcat_name[64] = {0}; static int g_newcat_name_len = 0;
 static int g_show_net = 0;
 static int g_api_enabled = 0;
 static char g_api_port[16] = {0}; static int g_api_port_len = 0;
@@ -380,6 +382,7 @@ static void draw_menubar(struct nk_context *ctx) {
         if (nk_menu_item_label(ctx, "Add to Queue", NK_TEXT_LEFT) && j) cdm_manager_add_to_queue(g_mgr, j->id);
         if (nk_menu_item_label(ctx, "Delete from Queue", NK_TEXT_LEFT) && j) cdm_manager_remove_from_queue(g_mgr, j->id);
         if (nk_menu_item_label(ctx, "Delete All Completed", NK_TEXT_LEFT)) cdm_manager_delete_all_completed(g_mgr);
+        if (nk_menu_item_label(ctx, "Categories...", NK_TEXT_LEFT)) g_show_cats = 1;
         nk_menu_end(ctx);
     }
     nk_layout_row_push(ctx, 0.18f);
@@ -915,6 +918,7 @@ static void persist_settings(void) {
     st.update_check = g_update_check;
     st.tray_icon = g_tray_icon;
     st.tray_minimize = g_tray_minimize;
+    st.dup_mode = g_mgr->dup_mode;
     cdm_settings_save(g_mgr, &st);
 }
 
@@ -1016,6 +1020,61 @@ static void draw_queues_modal(struct nk_context *ctx, int win_w, int win_h) {
     nk_end(ctx);
 }
 
+static void draw_cats_modal(struct nk_context *ctx, int win_w, int win_h) {
+    struct nk_rect r = nk_rect(win_w/2 - 300, win_h/2 - 220, 600, 440);
+    if (nk_begin(ctx, "Categories", r,
+                 NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_MOVABLE)) {
+        nk_layout_row_dynamic(ctx, 22, 1);
+        nk_label(ctx, "Name | Folder (slots 0-6 map extensions, locked)", NK_TEXT_LEFT);
+        for (int i = 0; i < g_mgr->n_cats; i++) {
+            cdm_category *c = &g_mgr->cats[i];
+            nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 3);
+            nk_layout_row_push(ctx, 0.28f);
+            { char nm[64]; int nl;
+              snprintf(nm, sizeof nm, "%s", c->name); nl = (int)strlen(nm);
+              nk_edit_string(ctx, NK_EDIT_FIELD, nm, &nl, sizeof(nm)-1,
+                             nk_filter_default);
+              if (nl > 0 && strcmp(nm, c->name) != 0)
+                  cdm_manager_category_set(g_mgr, i, nm, NULL);
+            }
+            nk_layout_row_push(ctx, 0.56f);
+            { char dr[1024]; int dl;
+              snprintf(dr, sizeof dr, "%s", c->dir); dl = (int)strlen(dr);
+              nk_edit_string(ctx, NK_EDIT_FIELD, dr, &dl, sizeof(dr)-1,
+                             nk_filter_default);
+              if (dl > 0 && strcmp(dr, c->dir) != 0)
+                  cdm_manager_category_set(g_mgr, i, NULL, dr);
+            }
+            nk_layout_row_push(ctx, 0.16f);
+            if (i >= 7 && nk_button_label(ctx, "Del")) {
+                cdm_manager_category_remove(g_mgr, i);
+                persist_settings();
+            } else nk_label(ctx, i >= 7 ? "" : "*", NK_TEXT_LEFT);
+            nk_layout_row_end(ctx);
+        }
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 3);
+        nk_layout_row_push(ctx, 0.5f);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_newcat_name, &g_newcat_name_len,
+                       sizeof(g_newcat_name)-1, nk_filter_default);
+        nk_layout_row_push(ctx, 0.25f);
+        if (nk_button_label(ctx, "Add")) {
+            if (g_newcat_name_len > 0) {
+                cdm_manager_category_add(g_mgr, g_newcat_name);
+                g_newcat_name[0]=0; g_newcat_name_len=0;
+                persist_settings();
+            }
+        }
+        nk_layout_row_push(ctx, 0.25f);
+        if (nk_button_label(ctx, "Close")) {
+            g_newcat_name[0]=0; g_newcat_name_len=0;
+            persist_settings();
+            g_show_cats=0;
+        }
+        nk_layout_row_end(ctx);
+    }
+    nk_end(ctx);
+}
+
 static void draw_edit_modal(struct nk_context *ctx, int win_w, int win_h) {
     cdm_job *j = (g_edit_id >= 0) ? cdm_manager_find(g_mgr, g_edit_id) : NULL;
     if (!j) { g_show_edit = 0; return; }
@@ -1108,7 +1167,7 @@ static void draw_opts_modal(struct nk_context *ctx) {
          * Apply (Close discards). Seeded from live values on each opening. */
         static int dlg_maxact = -1, dlg_theme = -1, dlg_skin = -1;
         static int dlg_tray = -1, dlg_auto = -1, dlg_upd = -1, dlg_path = -1;
-        static int dlg_ticon = -1, dlg_tmin = -1;
+        static int dlg_ticon = -1, dlg_tmin = -1, dlg_dup = -1;
         if (dlg_maxact < 0) {
             dlg_maxact = g_mgr->max_active;
             dlg_theme = g_theme;
@@ -1119,6 +1178,7 @@ static void draw_opts_modal(struct nk_context *ctx) {
             dlg_path = g_inpath = cdm_path_get();
             dlg_ticon = g_tray_icon;
             dlg_tmin = g_tray_minimize;
+            dlg_dup = g_mgr->dup_mode;
         }
         nk_layout_row_dynamic(ctx, 24, 1); nk_label(ctx, "Max concurrent downloads:", NK_TEXT_LEFT);
         nk_layout_row_dynamic(ctx, 26, 1);
@@ -1151,6 +1211,14 @@ static void draw_opts_modal(struct nk_context *ctx) {
         nk_layout_row_dynamic(ctx, 24, 1);
         nk_checkbox_label(ctx, "Check for updates at startup", &dlg_upd);
 
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 2);
+        nk_layout_row_push(ctx, 0.5f); nk_label(ctx, "Existing files:", NK_TEXT_LEFT);
+        nk_layout_row_push(ctx, 0.5f);
+        { const char *dm[2]={"Auto-rename","Overwrite"};
+          if (dlg_dup < 0 || dlg_dup > 1) dlg_dup = 0;
+          dlg_dup=nk_combo(ctx,dm,2,dlg_dup,18,nk_vec2(140,60)); }
+        nk_layout_row_end(ctx);
+
         nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
         nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "Apply")) {
@@ -1159,6 +1227,7 @@ static void draw_opts_modal(struct nk_context *ctx) {
             g_tray_close = dlg_tray ? 1 : 0;
             g_tray_minimize = dlg_tmin ? 1 : 0;
             g_update_check = dlg_upd ? 1 : 0;
+            g_mgr->dup_mode = dlg_dup ? 1 : 0;
             if (!!g_tray_icon != !!dlg_ticon) {
                 g_tray_icon = dlg_ticon ? 1 : 0;
                 if (g_tray_icon) g_tray_up = (cdm_tray_init() == 0);
@@ -1176,14 +1245,14 @@ static void draw_opts_modal(struct nk_context *ctx) {
             persist_settings();
             dlg_maxact = dlg_theme = dlg_skin = -1;
             dlg_tray = dlg_auto = dlg_upd = dlg_path = -1; /* re-seed next open */
-            dlg_ticon = dlg_tmin = -1;
+            dlg_ticon = dlg_tmin = dlg_dup = -1;
             g_show_opts=0;
         }
         nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "Close")) {
             dlg_maxact = dlg_theme = dlg_skin = -1; /* discard staged edits */
             dlg_tray = dlg_auto = dlg_upd = dlg_path = -1;
-            dlg_ticon = dlg_tmin = -1;
+            dlg_ticon = dlg_tmin = dlg_dup = -1;
             g_show_opts=0;
         }
         nk_layout_row_end(ctx);
@@ -1325,6 +1394,8 @@ int main(int argc, char **argv) {
         g_tray_icon = st.tray_icon;
         g_tray_minimize = st.tray_minimize;
         restart_ipc_server();
+        /* restore last session's job list (history + queued) */
+        cdm_manager_load_jobs(g_mgr);
         if (g_update_check)
             cdm_update_check_async("mickykhd/download-manager");
     }
@@ -1389,6 +1460,7 @@ int main(int argc, char **argv) {
         draw_context_menu(ctx);
         if (g_show_add)    draw_add_modal(ctx, w, h);
         if (g_show_batch)  draw_batch_modal(ctx, w, h);
+        if (g_show_cats)   draw_cats_modal(ctx, w, h);
         if (g_show_queues) draw_queues_modal(ctx, w, h);
         if (g_show_net)    draw_net_modal(ctx, w, h);
         if (g_show_edit)   draw_edit_modal(ctx, w, h);
@@ -1512,6 +1584,7 @@ int main(int argc, char **argv) {
     /* Persist Options so they survive a restart (covers theme/skin picked
      * via combo without pressing Apply). */
     persist_settings();
+    cdm_manager_save_jobs(g_mgr);
     cdm_ipc_stop();
     cdm_tray_shutdown();
     cdm_manager_destroy(g_mgr);

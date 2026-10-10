@@ -50,7 +50,8 @@ typedef struct {
 
     /* Proxy: 0 = direct (ignore env), 1 = system/env, 2 = manual. */
     int proxy_mode;
-    const char *proxy_url;     /* manual mode: [scheme://][user:pass@]host:port */
+    const char *proxy_url;     /* manual: [scheme://][user:pass@]host:port */
+    int dup_mode;              /* existing output: 0 = auto-rename, 1 = overwrite */
 } cdm_config;
 
 /* Proxy modes for cdm_config.proxy_mode */

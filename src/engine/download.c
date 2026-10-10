@@ -65,6 +65,7 @@ void cdm_config_default(cdm_config *cfg) {
     cfg->resume = 1;
     cfg->adaptive = 1;
     cfg->proxy_mode = CDM_PROXY_SYSTEM; /* respect env/system proxy */
+    cfg->dup_mode = 0;
 }
 
 cdm_status cdm_global_init(void) {
@@ -166,6 +167,42 @@ static cdm_status resolve_paths(cdm_download *d) {
                                                       : "download.bin");
     }
     if (!d->output_path) return CDM_ERR_NOMEM;
+    /* existing output with no resume state: rename unless overwriting */
+    if (cdm_file_exists(d->output_path) && d->cfg.dup_mode == 0) {
+        char part[2200], meta[2200];
+        snprintf(part, sizeof(part), "%s.part", d->output_path);
+        snprintf(meta, sizeof(meta), "%s.cdm", d->output_path);
+        if (!(d->cfg.resume && cdm_file_exists(part) && cdm_file_exists(meta))) {
+            char *base = d->output_path;
+            char *dot, *slash1;
+            const char *stem;
+            int n;
+            dot = strrchr(base, '.');
+            slash1 = strrchr(base, '/');
+#ifdef _WIN32
+            {
+                char *bslash = strrchr(base, '\\');
+                if (bslash && (!slash1 || bslash > slash1)) slash1 = bslash;
+            }
+#endif
+            stem = slash1 ? slash1 + 1 : base;
+            for (n = 1; n < 1000; n++) {
+                char cand[2200];
+                if (dot && dot > stem)
+                    snprintf(cand, sizeof(cand), "%.*s (%d)%s",
+                             (int)(dot - base), base, n, dot);
+                else
+                    snprintf(cand, sizeof(cand), "%s (%d)", base, n);
+                if (!cdm_file_exists(cand)) {
+                    free(d->output_path);
+                    d->output_path = dup_str(cand);
+                    if (!d->output_path) return CDM_ERR_NOMEM;
+                    break;
+                }
+            }
+            if (n >= 1000) return CDM_ERR_IO;
+        }
+    }
     d->part_path = join_suffix(d->output_path, ".part");
     d->meta_path = join_suffix(d->output_path, ".cdm");
     if (!d->part_path || !d->meta_path) return CDM_ERR_NOMEM;

@@ -89,6 +89,7 @@ typedef struct cdm_manager {
 
     cdm_category cats[16];
     int n_cats;
+    char base_dir[1024];  /* category root ("downloads") */
     int max_active;       /* default concurrency limit (0 = unlimited) */
 
     cdm_queue queues[CDM_MAX_QUEUES];
@@ -100,6 +101,8 @@ typedef struct cdm_manager {
     char proxy_url[512];  /* manual mode */
     cdm_host_rule hosts[CDM_MAX_HOSTS];
     int n_hosts;
+
+    int dup_mode;         /* 0 = auto-rename, 1 = overwrite existing */
 
     /* inbox for URLs fed by the integration server; the UI drains it */
     char pending_urls[CDM_MAX_PENDING_URLS][2048];
@@ -183,6 +186,11 @@ int cdm_parse_headers(const char *text, char *blob, size_t bcap,
 void cdm_manager_push_url(cdm_manager *m, const char *url);
 int cdm_manager_poll_urls(cdm_manager *m, char out[][2048], int cap);
 
+/* Job-list persistence (jobs.conf next to settings.conf). RUNNING jobs
+ * are stored as QUEUED; resume sidecars pick them up on next start. */
+int cdm_manager_save_jobs(cdm_manager *m);
+int cdm_manager_load_jobs(cdm_manager *m); /* returns jobs loaded */
+
 /* Scheduler: promote queued jobs whose slot/time has arrived. */
 void cdm_manager_pump(cdm_manager *m);
 
@@ -197,6 +205,12 @@ void cdm_manager_select(cdm_manager *m, int id);
 void cdm_manager_init_categories(cdm_manager *m, const char *base_dir);
 const cdm_category *cdm_manager_category_for_ext(cdm_manager *m,
                                                  const char *name_or_url);
+/* User categories: slots 0..6 are the built-in extension-mapped ones
+ * (rename/dir editable, never removable); 7..15 are custom. */
+int cdm_manager_category_add(cdm_manager *m, const char *name);
+int cdm_manager_category_remove(cdm_manager *m, int idx);
+void cdm_manager_category_set(cdm_manager *m, int idx, const char *name,
+                              const char *dir);
 
 /* Persistent app settings (Options dialog). Stored under the user config
  * dir ($XDG_CONFIG_HOME/cdm or %APPDATA%/cdm on Windows). Unknown keys
@@ -213,6 +227,7 @@ typedef struct {
     int update_check;/* check GitHub releases at startup */
     int tray_icon;   /* show system tray icon */
     int tray_minimize; /* minimize button hides to tray */
+    int dup_mode;    /* 0 = auto-rename existing, 1 = overwrite */
 } cdm_settings;
 
 void cdm_settings_default(cdm_settings *s);

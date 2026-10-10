@@ -35,6 +35,12 @@ static int cdm_extcasecmp(const char *a, const char *b) {
 static void job_free(cdm_job *j);
 const cdm_category *cdm_manager_category_for_ext(cdm_manager *m,
                                                  const char *name_or_url);
+static int add_internal(cdm_manager *m, const char *url, const char *outpath,
+                         const cdm_config *cfg, int queue_idx,
+                         time_t sched_epoch, int resolve_dup);
+cdm_job *cdm_manager_find(cdm_manager *m, int id);
+static void save_jobs_quiet(cdm_manager *m);
+static int split_tabs(char *line, char *fields[], int cap);
 
 /* mkdir every prefix of dir, including dir itself (for directory paths) */
 static void ensure_dir_all(const char *dir) {
@@ -147,6 +153,7 @@ cdm_manager *cdm_manager_create(void) {
     m->proxy_mode = CDM_PROXY_SYSTEM;
     m->proxy_url[0] = 0;
     m->n_hosts = 0;
+    m->dup_mode = 0;
     return m;
 }
 
@@ -245,16 +252,75 @@ int cdm_manager_queue_window_open(const cdm_queue *q, time_t now) {
     return cur >= s || cur < e; /* overnight wrap */
 }
 
+static const char *cdm_builtin_cat_names[7] = {
+    "General", "Video", "Music", "Programs",
+    "Documents", "Compressed", "Others"
+};
+
 void cdm_manager_init_categories(cdm_manager *m, const char *base_dir) {
-    const char *names[7] = {"General", "Video", "Music", "Programs",
-                            "Documents", "Compressed", "Others"};
     m->n_cats = 7;
     for (int i = 0; i < 7; i++) {
-        snprintf(m->cats[i].name, sizeof m->cats[i].name, "%s", names[i]);
+        snprintf(m->cats[i].name, sizeof m->cats[i].name, "%s",
+                 cdm_builtin_cat_names[i]);
         snprintf(m->cats[i].dir, sizeof m->cats[i].dir, "%s/%s",
-                 base_dir ? base_dir : "downloads", names[i]);
+                 base_dir ? base_dir : "downloads",
+                 cdm_builtin_cat_names[i]);
         ensure_dir_all(m->cats[i].dir);
     }
+    if (m->base_dir[0] == 0 && base_dir && *base_dir)
+        snprintf(m->base_dir, sizeof(m->base_dir), "%s", base_dir);
+}
+
+int cdm_manager_category_add(cdm_manager *m, const char *name) {
+    int idx = -1;
+    cdm_mutex_lock(m->mtx);
+    if (m->n_cats < 16) {
+        idx = m->n_cats++;
+        snprintf(m->cats[idx].name, sizeof(m->cats[idx].name),
+                 "%s", (name && *name) ? name : "Custom");
+        snprintf(m->cats[idx].dir, sizeof(m->cats[idx].dir), "%s/%s",
+                 m->base_dir[0] ? m->base_dir : "downloads",
+                 m->cats[idx].name);
+        ensure_dir_all(m->cats[idx].dir);
+    }
+    cdm_mutex_unlock(m->mtx);
+    if (idx >= 0) save_jobs_quiet(m);
+    return idx;
+}
+
+int cdm_manager_category_remove(cdm_manager *m, int idx) {
+    int rc = -1;
+    cdm_mutex_lock(m->mtx);
+    if (idx >= 7 && idx < m->n_cats) {
+        for (int i = 0; i < m->count; i++) {
+            cdm_job *j = m->jobs[i];
+            cdm_mutex_lock(j->mtx);
+            if (j->cat_idx == idx) j->cat_idx = 0;
+            else if (j->cat_idx > idx) j->cat_idx--;
+            cdm_mutex_unlock(j->mtx);
+        }
+        memmove(&m->cats[idx], &m->cats[idx + 1],
+                (size_t)(m->n_cats - idx - 1) * sizeof(cdm_category));
+        m->n_cats--;
+        rc = 0;
+    }
+    cdm_mutex_unlock(m->mtx);
+    if (rc == 0) save_jobs_quiet(m);
+    return rc;
+}
+
+void cdm_manager_category_set(cdm_manager *m, int idx, const char *name,
+                              const char *dir) {
+    cdm_mutex_lock(m->mtx);
+    if (idx >= 0 && idx < m->n_cats) {
+        if (name && *name)
+            snprintf(m->cats[idx].name, sizeof(m->cats[idx].name), "%s", name);
+        if (dir && *dir) {
+            snprintf(m->cats[idx].dir, sizeof(m->cats[idx].dir), "%s", dir);
+            ensure_dir_all(m->cats[idx].dir);
+        }
+    }
+    cdm_mutex_unlock(m->mtx);
 }
 
 /* ---- persistent settings ---- */
@@ -262,38 +328,52 @@ void cdm_manager_init_categories(cdm_manager *m, const char *base_dir) {
 #define CDM_SETTINGS_MAGIC "CDM-SETTINGS1"
 #define CDM_SETTINGS_MAX_ACTIVE 16
 
-/* Resolve the settings file path. Returns 1 when a usable location was
- * found, 0 when there is nowhere to persist (load keeps defaults, save
- * becomes a no-op). */
-static int settings_path(char *out, size_t cap) {
+/* Resolve a config-dir file path (settings.conf, jobs.conf, ...).
+ * Returns 1 when a usable location was found, 0 when there is nowhere
+ * to persist (load keeps defaults, save becomes a no-op). */
+static int config_path(char *out, size_t cap, const char *leaf) {
     const char *base = NULL;
-    const char *suffix = NULL;
+    char suffix[64];
+    suffix[0] = 0;
     /* XDG_CONFIG_HOME is honored on all platforms so tests can isolate
      * the config dir (and users can override it). */
     base = getenv("XDG_CONFIG_HOME");
     if (base && *base) {
-        suffix = "cdm/settings.conf";
+        snprintf(suffix, sizeof(suffix), "cdm/%s", leaf);
     }
 #ifdef _WIN32
-    if (!suffix) {
+    if (!suffix[0]) {
         base = getenv("APPDATA");
         if (base && *base) {
-            suffix = "cdm/settings.conf";
+            snprintf(suffix, sizeof(suffix), "cdm/%s", leaf);
         } else {
             base = getenv("USERPROFILE");
-            if (base && *base) suffix = "AppData/Roaming/cdm/settings.conf";
+            if (base && *base) {
+                snprintf(suffix, sizeof(suffix),
+                         "AppData/Roaming/cdm/%s", leaf);
+            }
         }
     }
 #else
-    if (!suffix) {
+    if (!suffix[0]) {
         base = getenv("HOME");
-        if (base && *base) suffix = ".config/cdm/settings.conf";
+        if (base && *base) {
+            snprintf(suffix, sizeof(suffix), ".config/cdm/%s", leaf);
+        }
     }
 #endif
-    if (!base || !*base || !suffix) return 0;
+    if (!base || !*base || !suffix[0]) return 0;
     /* base capped so base + '/' + suffix + NUL always fits cap (>= 64). */
     snprintf(out, cap, "%.2000s/%s", base, suffix);
     return 1;
+}
+
+static int settings_path(char *out, size_t cap) {
+    return config_path(out, cap, "settings.conf");
+}
+
+static int jobs_path(char *out, size_t cap) {
+    return config_path(out, cap, "jobs.conf");
 }
 
 void cdm_settings_default(cdm_settings *s) {
@@ -309,6 +389,7 @@ void cdm_settings_default(cdm_settings *s) {
     s->update_check = 1;
     s->tray_icon = 1;
     s->tray_minimize = 0;
+    s->dup_mode = 0;
 }
 
 static int clamp_int(int v, int lo, int hi) {
@@ -337,10 +418,42 @@ void cdm_settings_load(cdm_manager *m, cdm_settings *s) {
         m->proxy_mode = CDM_PROXY_SYSTEM;
         m->proxy_url[0] = 0;
         m->n_hosts = 0;
+        /* restore stock categories; file lines below may override */
+        cdm_manager_init_categories(m, m->base_dir[0] ? m->base_dir : NULL);
     }
     while (fgets(line, sizeof(line), f)) {
         char key[64];
         int val;
+        /* tab-led category lines first: "category\t7\t..." would sscanf
+         * as two tokens and otherwise slip past the string branch */
+        if (m && strncmp(line, "category\t", 9) == 0) {
+            char *fl[8];
+            int nf = split_tabs(line, fl, 8);
+            if (nf >= 4) {
+                int idx = atoi(fl[1]);
+                if (idx >= 0 && idx < 16) {
+                    while (m->n_cats <= idx && m->n_cats < 16) {
+                        snprintf(m->cats[m->n_cats].name,
+                                 sizeof(m->cats[0].name), "Custom%d",
+                                 m->n_cats);
+                        snprintf(m->cats[m->n_cats].dir,
+                                 sizeof(m->cats[0].dir), "%s/Custom%d",
+                                 m->base_dir[0] ? m->base_dir : "downloads",
+                                 m->n_cats);
+                        m->n_cats++;
+                    }
+                    if (fl[2][0])
+                        snprintf(m->cats[idx].name,
+                                 sizeof(m->cats[idx].name), "%.63s", fl[2]);
+                    if (fl[3][0]) {
+                        snprintf(m->cats[idx].dir,
+                                 sizeof(m->cats[idx].dir), "%.1023s", fl[3]);
+                        ensure_dir_all(m->cats[idx].dir);
+                    }
+                }
+            }
+            continue;
+        }
         if (sscanf(line, "%63s %d", key, &val) != 2) {
             /* string-carrying lines: queue/hostrule/proxy_url */
             if (m && strncmp(line, "queue ", 6) == 0) {
@@ -422,6 +535,8 @@ void cdm_settings_load(cdm_manager *m, cdm_settings *s) {
             s->tray_icon = val ? 1 : 0;
         else if (strcmp(key, "tray_minimize") == 0)
             s->tray_minimize = val ? 1 : 0;
+        else if (strcmp(key, "dup_mode") == 0)
+            s->dup_mode = (val == 1) ? 1 : 0;
         /* unknown keys ignored for forward compatibility */
     }
     fclose(f);
@@ -429,6 +544,7 @@ void cdm_settings_load(cdm_manager *m, cdm_settings *s) {
     if (m) {
         if (m->default_queue < 0 || m->default_queue >= m->n_queues)
             m->default_queue = 0;
+        m->dup_mode = s->dup_mode;
         cdm_manager_set_max_active(m, s->max_active);
     }
 }
@@ -465,9 +581,14 @@ int cdm_settings_save(const cdm_manager *m, const cdm_settings *s) {
     fprintf(f, "update_check %d\n", s->update_check ? 1 : 0);
     fprintf(f, "tray_icon %d\n", s->tray_icon ? 1 : 0);
     fprintf(f, "tray_minimize %d\n", s->tray_minimize ? 1 : 0);
+    fprintf(f, "dup_mode %d\n", s->dup_mode ? 1 : 0);
     if (s->api_key[0])
         fprintf(f, "api_key %s\n", s->api_key);
     if (m) {
+        int i;
+        for (i = 0; i < m->n_cats; i++)
+            fprintf(f, "category\t%d\t%s\t%s\n", i,
+                    m->cats[i].name, m->cats[i].dir);
         fprintf(f, "default_queue %d\n", m->default_queue);
         for (int i = 1; i < m->n_queues; i++) {
             const cdm_queue *q = &m->queues[i];
@@ -486,6 +607,151 @@ int cdm_settings_save(const cdm_manager *m, const cdm_settings *s) {
     }
     fclose(f);
     return 0;
+}
+
+#define CDM_JOBS_MAGIC "CDM-JOBS1"
+
+/* best-effort persist (used after every mutation + at exit) */
+static void save_jobs_quiet(cdm_manager *m) {
+    cdm_manager_save_jobs(m);
+}
+
+int cdm_manager_save_jobs(cdm_manager *m) {
+    char path[2048];
+    FILE *f;
+    if (!m) return -1;
+    if (!jobs_path(path, sizeof(path))) return -1;
+    /* ensure the config dir exists (strip basename first) */
+    {
+        char dir[2048];
+        char *slash;
+        snprintf(dir, sizeof(dir), "%.2047s", path);
+        slash = strrchr(dir, '/');
+#ifdef _WIN32
+        {
+            char *b = strrchr(dir, '\\');
+            if (b && (!slash || b > slash)) slash = b;
+        }
+#endif
+        if (slash) {
+            *slash = 0;
+            ensure_dir_all(dir);
+        }
+    }
+    f = fopen(path, "wb");
+    if (!f) return -1;
+    fprintf(f, "%s\n", CDM_JOBS_MAGIC);
+    cdm_mutex_lock(m->mtx);
+    for (int i = 0; i < m->count; i++) {
+        cdm_job *j = m->jobs[i];
+        int st, qi, cat;
+        long long speed, dl, total;
+        long long sched;
+        char url[2048], out[2048];
+        cdm_mutex_lock(j->mtx);
+        st = (j->state == JOB_RUNNING) ? JOB_QUEUED : (int)j->state;
+        qi = j->queue_idx;
+        cat = j->cat_idx;
+        speed = (long long)j->cfg.max_speed_bps;
+        dl = (long long)j->prog.downloaded_bytes;
+        total = (long long)j->prog.total_bytes;
+        sched = (long long)j->sched_epoch;
+        snprintf(url, sizeof(url), "%s", j->url);
+        snprintf(out, sizeof(out), "%s", j->outpath);
+        cdm_mutex_unlock(j->mtx);
+        /* tab-separated; url/outpath cannot contain tabs */
+        fprintf(f, "job\t%d\t%d\t%d\t%lld\t%lld\t%lld\t%lld\t%s\t%s\n",
+                st, qi, cat, speed, dl, total, sched, url, out);
+    }
+    cdm_mutex_unlock(m->mtx);
+    fclose(f);
+    return 0;
+}
+
+/* split line into tab fields (empty fields preserved). Returns count. */
+static int split_tabs(char *line, char *fields[], int cap) {
+    int n = 0;
+    char *p = line;
+    while (n < cap) {
+        char *t = strchr(p, '\t');
+        fields[n++] = p;
+        if (!t) break;
+        *t = 0;
+        p = t + 1;
+    }
+    /* strip trailing newline from last field */
+    if (n > 0) {
+        size_t k = strlen(fields[n-1]);
+        while (k > 0 && (fields[n-1][k-1] == '\r' || fields[n-1][k-1] == '\n'))
+            fields[n-1][--k] = 0;
+    }
+    return n;
+}
+
+int cdm_manager_load_jobs(cdm_manager *m) {
+    char path[2048];
+    FILE *f;
+    char line[8192];
+    int loaded = 0;
+    cdm_config cfg;
+    if (!m) return -1;
+    if (!jobs_path(path, sizeof(path))) return -1;
+    f = fopen(path, "rb");
+    if (!f) return -1; /* first run */
+    if (!fgets(line, sizeof(line), f) ||
+        strncmp(line, CDM_JOBS_MAGIC, strlen(CDM_JOBS_MAGIC)) != 0) {
+        fclose(f);
+        return -1;
+    }
+    cdm_config_default(&cfg);
+    cfg.quiet = 1;
+    while (fgets(line, sizeof(line), f)) {
+        char *fl[16];
+        int nf, st, qi, cat, id;
+        long long speed, sched;
+        if (split_tabs(line, fl, 16) < 9) continue;
+        if (strcmp(fl[0], "job") != 0) continue;
+        st = atoi(fl[1]);
+        qi = atoi(fl[2]);
+        cat = atoi(fl[3]);
+        speed = strtoll(fl[4], NULL, 10);
+        sched = strtoll(fl[7], NULL, 10);
+        /* fl[5], fl[6] = progress snapshot (display only; engine resumes
+         * from sidecars, so we deliberately do not restore them) */
+        if (st < JOB_QUEUED || st > JOB_CANCELED) continue;
+        if (qi < -1 || qi >= m->n_queues) qi = -1;
+        if (cat < -1 || cat >= m->n_cats) cat = 0;
+        if (!fl[8][0]) continue;
+        cfg.max_speed_bps = speed >= 0 ? speed : 0;
+        /* load path: no duplicate renaming (files on disk are expected),
+         * never auto-start (queue everything, restore terminal states). */
+        id = add_internal(m, fl[8], fl[9][0] ? fl[9] : NULL, &cfg,
+                          qi < 0 ? m->default_queue : qi, (time_t)sched, 0);
+        if (id < 0) continue;
+        {
+            cdm_job *j = cdm_manager_find(m, id);
+            if (!j) continue;
+            cdm_mutex_lock(j->mtx);
+            j->cat_idx = cat;
+            if (st == JOB_DONE || st == JOB_ERROR || st == JOB_CANCELED ||
+                st == JOB_PAUSED) {
+                j->state = (cdm_job_state)st;
+                if (st != JOB_PAUSED) j->queue_idx = -1;
+                /* show terminal progress as complete for DONE */
+                if (st == JOB_DONE) {
+                    j->prog.downloaded_bytes = j->prog.total_bytes > 0
+                        ? j->prog.total_bytes : 0;
+                }
+            } else {
+                j->state = JOB_QUEUED;
+                if (j->queue_idx < 0) j->queue_idx = m->default_queue;
+            }
+            cdm_mutex_unlock(j->mtx);
+        }
+        loaded++;
+    }
+    fclose(f);
+    return loaded;
 }
 
 const cdm_category *cdm_manager_category_for_ext(cdm_manager *m,
@@ -573,9 +839,52 @@ static void job_apply_policy(cdm_manager *m, cdm_job *j) {
     }
 }
 
+/* When outpath names an existing file with no resume state behind it,
+ * pick a free sibling ("name (1).ext") unless overwrite mode is on.
+ * Returns 0 with the final path in buf, -1 when unresolvable. */
+static int resolve_duplicate(cdm_manager *m, const char *outpath,
+                             char *buf, size_t cap) {
+    char cand[2048];
+    if (!outpath || !*outpath) return -1;
+    snprintf(cand, sizeof(cand), "%s", outpath);
+    if (!cdm_file_exists(cand)) {
+        snprintf(buf, cap, "%s", cand);
+        return 0;
+    }
+    /* resumable partials keep their name (sidecar continues the job) */
+    {
+        char part[2200], meta[2200];
+        snprintf(part, sizeof(part), "%s.part", cand);
+        snprintf(meta, sizeof(meta), "%s.cdm", cand);
+        if (cdm_file_exists(part) && cdm_file_exists(meta)) {
+            snprintf(buf, cap, "%s", cand);
+            return 0;
+        }
+    }
+    if (m->dup_mode == 1) {
+        snprintf(buf, cap, "%s", cand);
+        return 0;
+    }
+    /* rename: "stem (n).ext" / "stem (n)" */
+    for (int n = 1; n < 1000; n++) {
+        char *dot = strrchr(cand, '.');
+        char *slash1 = strrchr(cand, '/');
+        char *slash2 = strrchr(cand, '\\');
+        const char *base = slash1 ? slash1 + 1 : cand;
+        if (slash2 && slash2 + 1 > base) base = slash2 + 1;
+        if (dot && dot > base)
+            snprintf(buf, cap, "%.*s (%d)%s",
+                     (int)(dot - cand), cand, n, dot);
+        else
+            snprintf(buf, cap, "%s (%d)", cand, n);
+        if (!cdm_file_exists(buf)) return 0;
+    }
+    return -1;
+}
+
 static int add_internal(cdm_manager *m, const char *url, const char *outpath,
                          const cdm_config *cfg, int queue_idx,
-                         time_t sched_epoch) {
+                         time_t sched_epoch, int resolve_dup) {
     if (!url || !*url) return -1;
     if (queue_idx >= m->n_queues) queue_idx = m->n_queues - 1;
 
@@ -588,7 +897,19 @@ static int add_internal(cdm_manager *m, const char *url, const char *outpath,
     j->id = m->next_id++;
     snprintf(j->url, sizeof(j->url), "%s", url);
     if (outpath && *outpath) {
-        snprintf(j->outpath, sizeof(j->outpath), "%s", outpath);
+        if (resolve_dup) {
+            char resolved[2048];
+            if (resolve_duplicate(m, outpath, resolved, sizeof(resolved)) != 0) {
+                snprintf(j->errmsg, sizeof j->errmsg, "output path unavailable");
+                j->state = JOB_ERROR;
+                cdm_mutex_destroy(j->mtx);
+                free(j);
+                return -1;
+            }
+            snprintf(j->outpath, sizeof(j->outpath), "%s", resolved);
+        } else {
+            snprintf(j->outpath, sizeof(j->outpath), "%s", outpath);
+        }
         ensure_parent_dir(j->outpath);
     }
 
@@ -596,6 +917,7 @@ static int add_internal(cdm_manager *m, const char *url, const char *outpath,
     j->cfg.url = j->url;
     j->cfg.output_path = j->outpath[0] ? j->outpath : NULL;
     j->cfg.quiet = 1;
+    j->cfg.dup_mode = m->dup_mode;
     job_apply_net(j, cfg);
     job_apply_policy(m, j);
 
@@ -642,21 +964,28 @@ static int add_internal(cdm_manager *m, const char *url, const char *outpath,
 
 int cdm_manager_add_ex(cdm_manager *m, const char *url, const char *outpath,
                        const cdm_config *cfg, int queued, time_t sched_epoch) {
-    return add_internal(m, url, outpath, cfg,
-                        queued ? m->default_queue : -1, sched_epoch);
+    int id = add_internal(m, url, outpath, cfg,
+                          queued ? m->default_queue : -1, sched_epoch, 1);
+    if (id >= 0) save_jobs_quiet(m);
+    return id;
 }
 
 int cdm_manager_add_to_queue_idx(cdm_manager *m, const char *url,
                                  const char *outpath, const cdm_config *cfg,
                                  int queue_idx, time_t sched_epoch) {
+    int id;
     if (queue_idx < 0 || queue_idx >= m->n_queues)
         queue_idx = m->default_queue;
-    return add_internal(m, url, outpath, cfg, queue_idx, sched_epoch);
+    id = add_internal(m, url, outpath, cfg, queue_idx, sched_epoch, 1);
+    if (id >= 0) save_jobs_quiet(m);
+    return id;
 }
 
 int cdm_manager_add(cdm_manager *m, const char *url, const char *outpath,
                     const cdm_config *cfg) {
-    return add_internal(m, url, outpath, cfg, -1, 0);
+    int id = add_internal(m, url, outpath, cfg, -1, 0, 1);
+    if (id >= 0) save_jobs_quiet(m);
+    return id;
 }
 
 int cdm_manager_add_batch(cdm_manager *m, const char **urls, int n,
@@ -667,8 +996,9 @@ int cdm_manager_add_batch(cdm_manager *m, const char **urls, int n,
         queue_idx = m->default_queue;
     for (int i = 0; i < n; i++) {
         if (!urls[i] || !*urls[i]) continue;
-        if (add_internal(m, urls[i], NULL, cfg, queue_idx, 0) >= 0) ok++;
+        if (add_internal(m, urls[i], NULL, cfg, queue_idx, 0, 1) >= 0) ok++;
     }
+    if (ok > 0) save_jobs_quiet(m);
     return ok;
 }
 
@@ -791,6 +1121,7 @@ int cdm_manager_edit_net(cdm_manager *m, int id, const char *user_agent,
         cdm_mutex_unlock(j->mtx);
     }
     cdm_mutex_unlock(m->mtx);
+    if (rc == 0) save_jobs_quiet(m);
     return rc;
 }
 
@@ -897,6 +1228,7 @@ void cdm_manager_pause(cdm_manager *m, int id) {
         cdm_mutex_unlock(j->mtx);
     }
     cdm_mutex_unlock(m->mtx);
+    save_jobs_quiet(m);
 }
 
 void cdm_manager_resume(cdm_manager *m, int id) {
@@ -912,6 +1244,7 @@ void cdm_manager_resume(cdm_manager *m, int id) {
         cdm_mutex_unlock(j->mtx);
     }
     cdm_mutex_unlock(m->mtx);
+    save_jobs_quiet(m);
 }
 
 void cdm_manager_cancel(cdm_manager *m, int id) {
@@ -925,6 +1258,7 @@ void cdm_manager_cancel(cdm_manager *m, int id) {
         cdm_mutex_unlock(j->mtx);
     }
     cdm_mutex_unlock(m->mtx);
+    save_jobs_quiet(m);
 }
 
 void cdm_manager_remove(cdm_manager *m, int id) {
@@ -938,6 +1272,7 @@ void cdm_manager_remove(cdm_manager *m, int id) {
         cdm_mutex_unlock(j->mtx);
     }
     cdm_mutex_unlock(m->mtx);
+    save_jobs_quiet(m);
 }
 
 void cdm_manager_stop(cdm_manager *m, int id) {
@@ -950,6 +1285,7 @@ void cdm_manager_stop(cdm_manager *m, int id) {
         cdm_mutex_unlock(j->mtx);
     }
     cdm_mutex_unlock(m->mtx);
+    save_jobs_quiet(m);
 }
 
 void cdm_manager_stop_all(cdm_manager *m) {
@@ -961,6 +1297,7 @@ void cdm_manager_stop_all(cdm_manager *m) {
         cdm_mutex_unlock(j->mtx);
     }
     cdm_mutex_unlock(m->mtx);
+    save_jobs_quiet(m);
 }
 
 void cdm_manager_pause_all(cdm_manager *m) {
@@ -975,6 +1312,7 @@ void cdm_manager_pause_all(cdm_manager *m) {
         cdm_mutex_unlock(j->mtx);
     }
     cdm_mutex_unlock(m->mtx);
+    save_jobs_quiet(m);
 }
 
 void cdm_manager_resume_all(cdm_manager *m) {
@@ -989,6 +1327,7 @@ void cdm_manager_resume_all(cdm_manager *m) {
         cdm_mutex_unlock(j->mtx);
     }
     cdm_mutex_unlock(m->mtx);
+    save_jobs_quiet(m);
 }
 
 int cdm_manager_any_running(cdm_manager *m) {
@@ -1015,6 +1354,7 @@ void cdm_manager_delete_all_completed(cdm_manager *m) {
         cdm_mutex_unlock(j->mtx);
     }
     cdm_mutex_unlock(m->mtx);
+    save_jobs_quiet(m);
 }
 
 void cdm_manager_add_to_queue(cdm_manager *m, int id) {
@@ -1040,6 +1380,7 @@ void cdm_manager_move_to_queue(cdm_manager *m, int id, int queue_idx) {
         cdm_mutex_unlock(j->mtx);
     }
     cdm_mutex_unlock(m->mtx);
+    save_jobs_quiet(m);
 }
 
 void cdm_manager_remove_from_queue(cdm_manager *m, int id) {
@@ -1052,6 +1393,7 @@ void cdm_manager_remove_from_queue(cdm_manager *m, int id) {
         cdm_mutex_unlock(j->mtx);
     }
     cdm_mutex_unlock(m->mtx);
+    save_jobs_quiet(m);
 }
 
 void cdm_manager_set_max_active(cdm_manager *m, int n) {
@@ -1133,6 +1475,7 @@ int cdm_manager_queue_remove(cdm_manager *m, int idx) {
         rc = 0;
     }
     cdm_mutex_unlock(m->mtx);
+    if (rc == 0) save_jobs_quiet(m);
     return rc;
 }
 
@@ -1154,6 +1497,7 @@ void cdm_manager_queue_set(cdm_manager *m, int idx, const char *name,
 }
 
 void cdm_manager_reap(cdm_manager *m) {
+    int reaped_any = 0;
     cdm_mutex_lock(m->mtx);
     for (int i = m->count - 1; i >= 0; i--) {
         cdm_job *j = m->jobs[i];
@@ -1167,9 +1511,11 @@ void cdm_manager_reap(cdm_manager *m) {
                     (size_t)(m->count - i - 1) * sizeof(cdm_job *));
             m->count--;
             job_free(j);
+            reaped_any = 1;
         }
     }
     cdm_mutex_unlock(m->mtx);
+    if (reaped_any) save_jobs_quiet(m);
 }
 
 void cdm_manager_select(cdm_manager *m, int id) {

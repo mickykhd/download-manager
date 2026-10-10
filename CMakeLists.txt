@@ -215,6 +215,11 @@ target_include_directories(test_ipc PRIVATE include src/engine src/ui)
 target_link_libraries(test_ipc PRIVATE cdmcore)
 add_test(NAME test_ipc COMMAND test_ipc)
 
+add_executable(test_jobs tests/test_jobs.c src/ui/manager.c)
+target_include_directories(test_jobs PRIVATE include src/engine src/ui)
+target_link_libraries(test_jobs PRIVATE cdmcore)
+add_test(NAME test_jobs COMMAND test_jobs)
+
 add_executable(test_update tests/test_update.c src/ui/updater.c)
 target_include_directories(test_update PRIVATE include src/engine src/ui)
 target_link_libraries(test_update PRIVATE cdmcore)
