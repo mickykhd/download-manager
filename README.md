@@ -1,9 +1,26 @@
 # cdm — segmented download manager
 
-IDM-style segmented download manager in C: CLI (`cdm`) plus an optional
+IDM-style segmented download manager in C: CLI (`cdm`) plus a
 Nuklear/GLFW GUI (`cdm-gui`). Engine: libcurl + HTTP Range + resume
 (`.part` + `.cdm` sidecar), adaptive concurrency, speed limiting,
 SHA-256 integrity gate.
+
+## Features
+
+* **Segmented downloads** — multi-connection HTTP Range, resume,
+  retry/backoff, ETag change detection, SHA-256 gate.
+* **Named queues** — per-queue concurrency limits and daily time windows;
+  batch import (one URL per line, `{start:end}` range expansion).
+* **Connection settings** — proxy (direct/system/manual incl. WinINET),
+  per-host connection/speed/user-agent rules, per-download UA, referer,
+  cookies and extra headers.
+* **Browser integration** — local REST server (`/add`, `/queues`,
+  `/start-headless-download`, API-key auth) + Native Messaging host
+  (`cdm-native-host`) — see [docs/browser-integration.md](docs/browser-integration.md).
+* **Desktop citizenship (Windows)** — system tray with progress tooltip,
+  completion balloons, close-to-tray, auto-start, in-app update checker.
+* **Branding & packaging** — app icon, version metadata, single instance,
+  NSIS installer + portable ZIP, checksums, CI-built GitHub Releases.
 
 ## Prerequisites
 
@@ -77,6 +94,8 @@ cdm [options] <url>
   -S <sha256>   verify downloaded file against hex digest
   -q            quiet (no progress bar)
   -h            show help
+  --register-native-host [chrome|edge|firefox|all]
+                  install browser native-messaging manifests
 ```
 
 Example:
@@ -127,9 +146,13 @@ Artifacts land in `build/` (ignored by git; distribute via GitHub Releases).
 
 ## Layout
 
-* `src/cli/` — CLI front-end
 * `src/engine/` — portable engine (curl multi, chunks, resume, retry)
 * `src/platform/` — `platform_win.c` / `platform_posix.c` (`cdm_thread`, `cdm_mutex`, `cdm_file`)
-* `src/ui/` — queue manager + Nuklear GUI (uses `cdm_thread`/`cdm_mutex`, no raw pthreads)
-* `tests/` — `test_range`, `test_settings` (run via `ctest`)
+* `src/ui/` — queue manager, Nuklear GUI, REST integration server,
+  tray and updater (uses `cdm_thread`/`cdm_mutex`, no raw pthreads)
+* `src/cli/` — CLI front-end, native-messaging host bridge, manifest
+  registration
+* `tests/` — `test_range`, `test_settings`, `test_queue`, `test_net`,
+  `test_ipc`, `test_update` (run via `ctest`)
 * `third_party/nuklear/` — bundled Nuklear headers
+* `docs/` — user docs (browser integration)

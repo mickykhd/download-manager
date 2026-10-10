@@ -5,7 +5,7 @@ All notable changes to cdm are documented here. Format follows
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-10-10
+## [0.2.0] - 2026-10-11
 ### Added
 - Named download queues with per-queue concurrency limits and time-window
   schedules; queue picker in the Add dialog; queue manager.

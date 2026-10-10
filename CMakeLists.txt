@@ -244,7 +244,7 @@ if(WIN32)
     set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
     set(CPACK_NSIS_MUI_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/cdm.ico")
     set(CPACK_NSIS_MUI_UNIICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/cdm.ico")
-    set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\cdm-gui.exe")
+    set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\cdm-gui.exe")
     # Start Menu entries so the app is actually launchable after install
     # (otherwise only Uninstall.lnk shows up).
     set(CPACK_NSIS_MENU_LINKS
