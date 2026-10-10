@@ -58,6 +58,9 @@ if(CDM_FETCH_CURL)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
     set(HTTP_ONLY ON CACHE BOOL "" FORCE)
     set(CURL_DISABLE_LDAP ON CACHE BOOL "" FORCE)
+    # Keep `cmake --install` / CPack app-only: skip libcurl headers/libs.
+    set(CURL_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
+    set(CURL_ENABLE_EXPORT_TARGET OFF CACHE BOOL "" FORCE)
     if(WIN32)
         set(CURL_USE_SCHANNEL ON CACHE BOOL "" FORCE)
     endif()
@@ -131,6 +134,18 @@ if(CDM_BUILD_GUI)
         )
         if(NOT WIN32)
             target_link_libraries(cdm-gui PRIVATE Threads::Threads m)
+        else()
+            # Ship the third-party runtime DLLs (glfw3.dll, glew32.dll)
+            # next to cdm-gui.exe so the installed app actually starts.
+            install(IMPORTED_RUNTIME_ARTIFACTS GLEW::GLEW
+                RUNTIME DESTINATION bin)
+            if(TARGET glfw3::glfw3)
+                install(IMPORTED_RUNTIME_ARTIFACTS glfw3::glfw3
+                    RUNTIME DESTINATION bin)
+            elseif(TARGET glfw)
+                install(IMPORTED_RUNTIME_ARTIFACTS glfw
+                    RUNTIME DESTINATION bin)
+            endif()
         endif()
         install(TARGETS cdm-gui RUNTIME DESTINATION bin OPTIONAL)
     endif()

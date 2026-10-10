@@ -668,6 +668,10 @@ int main(int argc, char **argv) {
     if (glewInit() != GLEW_OK) { fprintf(stderr, "cdm: GLEW init failed\n"); return 1; }
 
     struct nk_glfw nk;
+    /* The backend leaves input state (text_len, key_events, scroll)
+     * untouched, so a non-zeroed struct feeds garbage input events
+     * (and a garbage text length) into the first frames. */
+    memset(&nk, 0, sizeof(nk));
     nk_glfw3_init(&nk, win, NK_GLFW3_INSTALL_CALLBACKS);
     struct nk_context *ctx = &nk.ctx;
     struct nk_font_atlas *atlas;
@@ -701,8 +705,8 @@ int main(int argc, char **argv) {
         cdm_manager_pump(g_mgr);
         cdm_manager_reap(g_mgr);
 
-        glClear(GL_COLOR_BUFFER_BIT);
         glClearColor(g_theme?0.92f:0.13f, g_theme?0.92f:0.14f, g_theme?0.92f:0.16f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
         nk_glfw3_render(&nk, NK_ANTI_ALIASING_ON, 512*1024, 128*1024);
         glfwSwapBuffers(win);
     }
