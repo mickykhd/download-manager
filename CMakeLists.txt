@@ -39,6 +39,7 @@ endif()
 
 set(CDM_ENGINE_SRC
     src/engine/download.c
+    src/engine/connopts.c
     src/engine/httpinfo.c
     src/engine/segment.c
     src/engine/scheduler.c
@@ -184,6 +185,11 @@ add_executable(test_queue tests/test_queue.c src/ui/manager.c)
 target_include_directories(test_queue PRIVATE include src/engine src/ui)
 target_link_libraries(test_queue PRIVATE cdmcore)
 add_test(NAME test_queue COMMAND test_queue)
+
+add_executable(test_net tests/test_net.c src/ui/manager.c)
+target_include_directories(test_net PRIVATE include src/engine src/ui)
+target_link_libraries(test_net PRIVATE cdmcore)
+add_test(NAME test_net COMMAND test_net)
 
 install(TARGETS cdm RUNTIME DESTINATION bin)
 

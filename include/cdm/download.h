@@ -37,7 +37,28 @@ typedef struct {
     int adaptive;              /* 1 => adaptive concurrency probing */
     const char *expected_sha256; /* optional hex digest for integrity gate */
     int quiet;                 /* suppress progress callbacks driving output */
+
+    /* HTTP extras (all optional, NULL/0 = default) */
+    const char *user_agent;
+    const char *referer;
+    const char *cookie;        /* raw Cookie header value */
+    const char **extra_headers;/* array of "Name: value" strings */
+    int n_extra_headers;
+    /* Manager-level convenience: "Name: value" lines; the manager parses
+     * this into job-owned extra_headers (engine ignores this field). */
+    const char *headers_text;
+
+    /* Proxy: 0 = direct (ignore env), 1 = system/env, 2 = manual. */
+    int proxy_mode;
+    const char *proxy_url;     /* manual mode: [scheme://][user:pass@]host:port */
 } cdm_config;
+
+/* Proxy modes for cdm_config.proxy_mode */
+enum {
+    CDM_PROXY_DIRECT = 0,
+    CDM_PROXY_SYSTEM = 1,
+    CDM_PROXY_MANUAL = 2
+};
 
 void cdm_config_default(cdm_config *cfg);
 

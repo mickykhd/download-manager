@@ -65,7 +65,7 @@ void cdm_transfer_config(cdm_transfer *t) {
                      d->probe.effective_url[0] ? d->probe.effective_url : d->url);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(c, CURLOPT_MAXREDIRS, 20L);
-    curl_easy_setopt(c, CURLOPT_USERAGENT, CDM_USER_AGENT);
+    cdm_apply_conn_opts(c, &d->cfg, &t->headers);
     curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, ""); /* identity */
     curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(c, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_1_1);
@@ -100,9 +100,10 @@ void cdm_transfer_config(cdm_transfer *t) {
         if (d->probe.etag[0]) {
             char ifr[300];
             snprintf(ifr, sizeof(ifr), "If-Range: %s", d->probe.etag);
-            t->headers = curl_slist_append(NULL, ifr);
-            curl_easy_setopt(c, CURLOPT_HTTPHEADER, t->headers);
+            t->headers = curl_slist_append(t->headers, ifr);
         }
+        if (t->headers)
+            curl_easy_setopt(c, CURLOPT_HTTPHEADER, t->headers);
     } else if (ch->done > 0) {
         curl_easy_setopt(c, CURLOPT_RESUME_FROM_LARGE, (curl_off_t)ch->done);
     }

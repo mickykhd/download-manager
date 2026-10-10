@@ -72,7 +72,7 @@ int main(void) {
 
     const char *btns[] = {"Add URL","Start/Resume","Stop","Stop All",
                            "Delete","Delete Compl.","Options","Scheduler",
-                           "Add Batch","Queues","Edit", NULL};
+                           "Add Batch","Queues","Network","Edit", NULL};
     int fail = 0;
     printf("Toolbar button widths:\n");
     for (int i = 0; btns[i]; i++) {

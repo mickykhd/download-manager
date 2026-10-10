@@ -133,14 +133,18 @@ static void derive_name_from_url(const char *url, char *out, size_t cap) {
     if (out[0] == 0) snprintf(out, cap, "download.bin");
 }
 
-static void apply_common_opts(CURL *c, const cdm_config *cfg) {
+/* Extra headers are appended to *slist (may be NULL to skip); the list
+ * stays owned by the caller and must outlive curl_easy_perform. */
+static void apply_common_opts(CURL *c, const cdm_config *cfg,
+                              struct curl_slist **slist) {
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(c, CURLOPT_MAXREDIRS, 20L);
-    curl_easy_setopt(c, CURLOPT_USERAGENT, CDM_USER_AGENT);
+    cdm_apply_conn_opts(c, cfg, slist);
+    if (slist && *slist)
+        curl_easy_setopt(c, CURLOPT_HTTPHEADER, *slist);
     curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, ""); /* identity for ranges */
     curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 30L);
-    (void)cfg;
 }
 
 cdm_status cdm_probe_url(const char *url, const cdm_config *cfg, cdm_probe *out) {
@@ -151,7 +155,8 @@ cdm_status cdm_probe_url(const char *url, const cdm_config *cfg, cdm_probe *out)
     if (!c) return CDM_ERR_INTERNAL;
 
     probe_ctx ctx = { out, -1 };
-    apply_common_opts(c, cfg);
+    struct curl_slist *hdrs = NULL;
+    apply_common_opts(c, cfg, &hdrs);
     curl_easy_setopt(c, CURLOPT_URL, url);
     curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, header_cb);
     curl_easy_setopt(c, CURLOPT_HEADERDATA, &ctx);
@@ -171,10 +176,18 @@ cdm_status cdm_probe_url(const char *url, const cdm_config *cfg, cdm_probe *out)
         curl_easy_setopt(c, CURLOPT_NOBODY, 1L);
         rc = curl_easy_perform(c);
         curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
-        if (rc != CURLE_OK) { curl_easy_cleanup(c); return CDM_ERR_NET; }
+        if (rc != CURLE_OK) {
+            if (hdrs) curl_slist_free_all(hdrs);
+            curl_easy_cleanup(c);
+            return CDM_ERR_NET;
+        }
     }
 
-    if (code >= 400) { curl_easy_cleanup(c); return CDM_ERR_HTTP; }
+    if (code >= 400) {
+        if (hdrs) curl_slist_free_all(hdrs);
+        curl_easy_cleanup(c);
+        return CDM_ERR_HTTP;
+    }
 
     /* 206 => ranges definitely supported. */
     if (code == 206) out->accept_ranges = 1;
@@ -210,6 +223,7 @@ cdm_status cdm_probe_url(const char *url, const cdm_config *cfg, cdm_probe *out)
         derive_name_from_url(src, out->filename, sizeof(out->filename));
     }
 
+    if (hdrs) curl_slist_free_all(hdrs);
     curl_easy_cleanup(c);
     return CDM_OK;
 }

@@ -27,6 +27,7 @@ void cdm_config_default(cdm_config *cfg) {
     cfg->max_retries = CDM_DEFAULT_RETRIES;
     cfg->resume = 1;
     cfg->adaptive = 1;
+    cfg->proxy_mode = CDM_PROXY_SYSTEM; /* respect env/system proxy */
 }
 
 cdm_status cdm_global_init(void) {
@@ -61,6 +62,8 @@ cdm_download *cdm_download_create(const cdm_config *cfg) {
     if (d->cfg.chunk_size <= 0)       d->cfg.chunk_size = CDM_DEFAULT_CHUNK;
     if (d->cfg.chunk_size < CDM_MIN_CHUNK) d->cfg.chunk_size = CDM_MIN_CHUNK;
     if (d->cfg.max_retries < 0)       d->cfg.max_retries = CDM_DEFAULT_RETRIES;
+    if (d->cfg.proxy_mode < CDM_PROXY_DIRECT || d->cfg.proxy_mode > CDM_PROXY_MANUAL)
+        d->cfg.proxy_mode = CDM_PROXY_SYSTEM; /* historical curl behaviour */
     if (d->cfg.start_connections > d->cfg.max_connections)
         d->cfg.start_connections = d->cfg.max_connections;
 

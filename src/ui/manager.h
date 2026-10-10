@@ -5,6 +5,10 @@
 #include "cdm/platform.h"
 #include <time.h>
 
+#define CDM_MAX_QUEUES 8
+#define CDM_MAX_HOSTS 16
+#define CDM_MAX_JOB_HEADERS 32
+
 typedef enum {
     JOB_QUEUED,    /* waiting in queue / for schedule */
     JOB_RUNNING,
@@ -36,6 +40,14 @@ typedef struct cdm_job {
     time_t sched_epoch;  /* 0 = no schedule; else start >= this */
     int cat_idx;         /* category index (-1 unknown) */
 
+    /* job-owned network strings (cfg points here, never dangles) */
+    char net_ua[256];
+    char net_referer[512];
+    char net_cookie[1024];
+    char hdr_blob[2048];
+    const char *hdr_ptrs[CDM_MAX_JOB_HEADERS];
+    int n_hdrs;
+
     /* runtime */
     int running;          /* worker thread alive */
     cdm_mutex *mtx;
@@ -45,8 +57,6 @@ typedef struct {
     char name[64];
     char dir[1024];
 } cdm_category;
-
-#define CDM_MAX_QUEUES 8
 
 /* A named run queue with its own concurrency limit and optional daily
  * time window (minutes since midnight, -1 = no bound). Jobs whose
@@ -59,6 +69,15 @@ typedef struct {
     int sched_end_min;   /* -1 = no window bound */
     int enabled;
 } cdm_queue;
+
+/* Per-host connection policy. Non-zero/non-empty fields override the
+ * download's own settings. */
+typedef struct {
+    char host[256];      /* lowercase hostname, no port */
+    int max_connections; /* 0 = default */
+    int64_t max_speed_bps;
+    char user_agent[256];/* empty = default */
+} cdm_host_rule;
 
 typedef struct {
     cdm_job **jobs;
@@ -74,6 +93,12 @@ typedef struct {
     cdm_queue queues[CDM_MAX_QUEUES];
     int n_queues;
     int default_queue;    /* index used by the Add dialog's queue option */
+
+    /* connection policy */
+    int proxy_mode;       /* CDM_PROXY_* */
+    char proxy_url[512];  /* manual mode */
+    cdm_host_rule hosts[CDM_MAX_HOSTS];
+    int n_hosts;
 
     cdm_mutex *mtx;
 } cdm_manager;
@@ -102,6 +127,11 @@ int cdm_expand_range(const char *pattern, char out[][2048], int cap);
 int cdm_manager_edit(cdm_manager *m, int id, const char *url,
                      const char *outpath, int64_t max_speed_bps,
                      int queue_idx);
+/* Edit a non-running job's UA/referer/cookie/extra-headers. NULL keeps.
+ * Returns 0 ok, -1 busy. */
+int cdm_manager_edit_net(cdm_manager *m, int id, const char *user_agent,
+                         const char *referer, const char *cookie,
+                         const char *headers_text);
 
 void cdm_manager_pause(cdm_manager *m, int id);
 void cdm_manager_resume(cdm_manager *m, int id);
@@ -123,6 +153,19 @@ void cdm_manager_queue_set(cdm_manager *m, int idx, const char *name,
                            int max_active, int start_min, int end_min,
                            int enabled);
 int cdm_manager_queue_window_open(const cdm_queue *q, time_t now);
+
+/* Connection policy. */
+void cdm_manager_set_proxy(cdm_manager *m, int mode, const char *url);
+int cdm_manager_host_add(cdm_manager *m, const char *host);
+int cdm_manager_host_remove(cdm_manager *m, int idx);
+void cdm_manager_host_set(cdm_manager *m, int idx, int max_connections,
+                          int64_t max_speed_bps, const char *user_agent);
+/* hostname of url, lowercased, no port. host="" when unparsable. */
+void cdm_host_of_url(const char *url, char *host, size_t cap);
+const cdm_host_rule *cdm_manager_host_for_url(cdm_manager *m, const char *url);
+/* Split "Name: value" lines into blob/ptrs. Returns header count. */
+int cdm_parse_headers(const char *text, char *blob, size_t bcap,
+                      const char **ptrs, int pcap);
 
 /* Scheduler: promote queued jobs whose slot/time has arrived. */
 void cdm_manager_pump(cdm_manager *m);

@@ -92,6 +92,8 @@ static int  g_cat_idx = 0;
 static char g_speed[32] = {0}; static int g_speed_len = 0;
 static char g_sched[32] = {0}; static int g_sched_len = 0;
 static int  g_add_queue = -1; /* -1 = download now, else queue index */
+static char g_add_ua[256] = {0}; static int g_add_ua_len = 0;
+static char g_add_hdrs[2048] = {0}; static int g_add_hdrs_len = 0;
 
 static int g_show_props = 0;
 static char g_props_speed[32] = {0}; static int g_props_speed_len = 0;
@@ -102,6 +104,10 @@ static char g_edit_url[2048] = {0}; static int g_edit_url_len = 0;
 static char g_edit_out[2048] = {0}; static int g_edit_out_len = 0;
 static char g_edit_speed[32] = {0}; static int g_edit_speed_len = 0;
 static int  g_edit_queue = -1;
+static char g_edit_ua[256] = {0}; static int g_edit_ua_len = 0;
+static char g_edit_referer[512] = {0}; static int g_edit_referer_len = 0;
+static char g_edit_cookie[1024] = {0}; static int g_edit_cookie_len = 0;
+static char g_edit_hdrs[2048] = {0}; static int g_edit_hdrs_len = 0;
 
 static int g_show_batch = 0;
 static char g_batch[8192] = {0}; static int g_batch_len = 0;
@@ -109,6 +115,10 @@ static int  g_batch_queue = 0;
 
 static int g_show_queues = 0;
 static char g_newq_name[64] = {0}; static int g_newq_name_len = 0;
+static int g_show_net = 0;
+static int g_net_proxy = CDM_PROXY_SYSTEM;
+static char g_net_proxy_url[512] = {0}; static int g_net_proxy_url_len = 0;
+static char g_newhost[256] = {0}; static int g_newhost_len = 0;
 static int  g_qedit_idx = 0;
 static char g_qedit_start[16] = {0}; static int g_qedit_start_len = 0;
 static char g_qedit_end[16] = {0}; static int g_qedit_end_len = 0;
@@ -133,6 +143,7 @@ static int g_skin = 0;    /* 0 blue,1 teal,2 red,3 purple */
 static int g_cat_filter = -1; /* -1 = all */
 
 static void open_edit(cdm_job *j); /* defined after draw_toolbar */
+static void persist_settings(void); /* defined with the modals */
 
 /* local IPC (browser native-messaging -> running app) */
 static int g_ipc_sock = -1;
@@ -350,14 +361,122 @@ static void draw_toolbar(struct nk_context *ctx) {
     if (nk_button_label(ctx, "Scheduler")) g_show_sched = 1;
     nk_layout_row_end(ctx);
 
-    nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 3);
-    nk_layout_row_push(ctx, 0.33f);
+    nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 4);
+    nk_layout_row_push(ctx, 0.24f);
     if (nk_button_label(ctx, "Add Batch")) g_show_batch = 1;
-    nk_layout_row_push(ctx, 0.33f);
+    nk_layout_row_push(ctx, 0.24f);
     if (nk_button_label(ctx, "Queues")) g_show_queues = 1;
-    nk_layout_row_push(ctx, 0.34f);
+    nk_layout_row_push(ctx, 0.26f);
+    if (nk_button_label(ctx, "Network")) {
+        g_net_proxy = g_mgr->proxy_mode;
+        snprintf(g_net_proxy_url, sizeof(g_net_proxy_url), "%s", g_mgr->proxy_url);
+        g_net_proxy_url_len = (int)strlen(g_net_proxy_url);
+        g_show_net = 1;
+    }
+    nk_layout_row_push(ctx, 0.26f);
     if (nk_button_label(ctx, "Edit") && j && !j->running) open_edit(j);
     nk_layout_row_end(ctx);
+}
+
+static int g_host_edit_idx = 0;
+static int g_host_hmax = 0;
+static char g_host_speed[32] = {0}; static int g_host_speed_len = 0;
+static char g_host_ua[256] = {0}; static int g_host_ua_len = 0;
+
+static void draw_net_modal(struct nk_context *ctx, int win_w, int win_h) {
+    struct nk_rect r = nk_rect(win_w/2 - 300, win_h/2 - 240, 600, 480);
+    if (nk_begin(ctx, "Network", r,
+                 NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_MOVABLE)) {
+        nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, "Proxy:", NK_TEXT_LEFT);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 2);
+        nk_layout_row_push(ctx, 0.4f);
+        { const char *modes[3] = {"Direct", "System", "Manual"};
+          if (g_net_proxy < 0 || g_net_proxy > 2) g_net_proxy = CDM_PROXY_SYSTEM;
+          g_net_proxy = nk_combo(ctx, modes, 3, g_net_proxy, 18, nk_vec2(160, 90)); }
+        nk_layout_row_push(ctx, 0.6f);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_net_proxy_url, &g_net_proxy_url_len,
+                       sizeof(g_net_proxy_url)-1, nk_filter_default);
+        nk_layout_row_end(ctx);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
+        nk_layout_row_push(ctx, 0.5f);
+        nk_label(ctx, "Manual: host:port or full URL", NK_TEXT_LEFT);
+        nk_layout_row_push(ctx, 0.5f);
+        if (nk_button_label(ctx, "Apply proxy")) {
+            cdm_manager_set_proxy(g_mgr, g_net_proxy,
+                                  g_net_proxy_url_len ? g_net_proxy_url : "");
+            persist_settings();
+        }
+        nk_layout_row_end(ctx);
+
+        nk_layout_row_dynamic(ctx, 22, 1);
+        nk_label(ctx, "Per-host rules (host | max conn | speed B/s | del):", NK_TEXT_LEFT);
+        for (int i = 0; i < g_mgr->n_hosts; i++) {
+            cdm_host_rule *h = &g_mgr->hosts[i];
+            nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 4);
+            nk_layout_row_push(ctx, 0.40f); nk_label(ctx, h->host, NK_TEXT_LEFT);
+            nk_layout_row_push(ctx, 0.20f);
+            { char ms[24]; snprintf(ms, sizeof ms, "%d", h->max_connections);
+              nk_label(ctx, ms, NK_TEXT_LEFT); }
+            nk_layout_row_push(ctx, 0.24f);
+            { char sp[32]; snprintf(sp, sizeof sp, "%lld", (long long)h->max_speed_bps);
+              nk_label(ctx, sp, NK_TEXT_LEFT); }
+            nk_layout_row_push(ctx, 0.16f);
+            if (nk_button_label(ctx, "Del")) {
+                cdm_manager_host_remove(g_mgr, i);
+                persist_settings();
+            }
+            nk_layout_row_end(ctx);
+        }
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 3);
+        nk_layout_row_push(ctx, 0.5f);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_newhost, &g_newhost_len,
+                       sizeof(g_newhost)-1, nk_filter_default);
+        nk_layout_row_push(ctx, 0.25f);
+        if (nk_button_label(ctx, "Add")) {
+            if (g_newhost_len > 0) {
+                cdm_manager_host_add(g_mgr, g_newhost);
+                g_newhost[0]=0; g_newhost_len=0;
+                persist_settings();
+            }
+        }
+        nk_layout_row_push(ctx, 0.25f);
+        if (nk_button_label(ctx, "Close")) {
+            g_newhost[0]=0; g_newhost_len=0; g_show_net=0;
+        }
+        nk_layout_row_end(ctx);
+
+        /* edit the selected host's limits */
+        nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, "Edit host limits (max conn, speed B/s, UA):", NK_TEXT_LEFT);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 3);
+        nk_layout_row_push(ctx, 0.40f);
+        { const char *names[CDM_MAX_HOSTS];
+          for (int i = 0; i < g_mgr->n_hosts; i++) names[i] = g_mgr->hosts[i].host;
+          if (g_host_edit_idx >= g_mgr->n_hosts) g_host_edit_idx = 0;
+          if (g_mgr->n_hosts > 0)
+              g_host_edit_idx = nk_combo(ctx, names, g_mgr->n_hosts, g_host_edit_idx,
+                                         18, nk_vec2(200, 200)); }
+        nk_layout_row_push(ctx, 0.24f);
+        nk_property_int(ctx, "#", 0, &g_host_hmax, 64, 1, 1);
+        nk_layout_row_push(ctx, 0.36f);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_host_speed, &g_host_speed_len,
+                       sizeof(g_host_speed)-1, nk_filter_decimal);
+        nk_layout_row_end(ctx);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 2);
+        nk_layout_row_push(ctx, 0.15f); nk_label(ctx, "UA:", NK_TEXT_LEFT);
+        nk_layout_row_push(ctx, 0.85f);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_host_ua, &g_host_ua_len,
+                       sizeof(g_host_ua)-1, nk_filter_default);
+        nk_layout_row_end(ctx);
+        nk_layout_row_dynamic(ctx, 28, 1);
+        if (nk_button_label(ctx, "Apply host limits") && g_mgr->n_hosts > 0) {
+            cdm_manager_host_set(g_mgr, g_host_edit_idx, g_host_hmax,
+                                 parse_speed(g_host_speed), g_host_ua);
+            g_host_speed[0]=0; g_host_speed_len=0;
+            g_host_ua[0]=0; g_host_ua_len=0;
+            persist_settings();
+        }
+    }
+    nk_end(ctx);
 }
 
 static void open_edit(cdm_job *j) {
@@ -368,12 +487,31 @@ static void open_edit(cdm_job *j) {
     snprintf(g_edit_out, sizeof(g_edit_out), "%s", j->outpath);
     snprintf(g_edit_speed, sizeof(g_edit_speed), "%lld",
              (long long)j->cfg.max_speed_bps);
+    snprintf(g_edit_ua, sizeof(g_edit_ua), "%s", j->net_ua);
+    snprintf(g_edit_referer, sizeof(g_edit_referer), "%s", j->net_referer);
+    snprintf(g_edit_cookie, sizeof(g_edit_cookie), "%s", j->net_cookie);
+    g_edit_hdrs[0] = 0;
+    /* rebuild the textarea from the parsed headers */
+    {
+        size_t off = 0;
+        for (int i = 0; i < j->n_hdrs && off + 1 < sizeof(g_edit_hdrs); i++) {
+            int w = snprintf(g_edit_hdrs + off, sizeof(g_edit_hdrs) - off,
+                             "%s%s", i ? "\n" : "", j->hdr_ptrs[i]);
+            if (w < 0) break;
+            off += (size_t)w;
+            if (off >= sizeof(g_edit_hdrs)) { off = sizeof(g_edit_hdrs) - 1; break; }
+        }
+    }
     g_edit_queue = j->queue_idx;
     edit_id = j->id;
     cdm_mutex_unlock(j->mtx);
     g_edit_url_len = (int)strlen(g_edit_url);
     g_edit_out_len = (int)strlen(g_edit_out);
     g_edit_speed_len = (int)strlen(g_edit_speed);
+    g_edit_ua_len = (int)strlen(g_edit_ua);
+    g_edit_referer_len = (int)strlen(g_edit_referer);
+    g_edit_cookie_len = (int)strlen(g_edit_cookie);
+    g_edit_hdrs_len = (int)strlen(g_edit_hdrs);
     g_edit_id = edit_id;
     g_show_edit = 1;
 }
@@ -510,6 +648,8 @@ static void submit_add(void) {
         snprintf(outpath,sizeof outpath,"%s/%.1174s", g_mgr->cats[g_cat_idx].dir, bn);
     }
     cdm_config cfg = g_cfg; cfg.max_speed_bps = sp;
+    cfg.user_agent = g_add_ua_len ? g_add_ua : NULL;
+    cfg.headers_text = g_add_hdrs_len ? g_add_hdrs : NULL;
     int id;
     if (g_add_queue >= 0)
         id = cdm_manager_add_to_queue_idx(g_mgr, g_url, outpath, &cfg, g_add_queue, ep);
@@ -521,6 +661,7 @@ static void submit_add(void) {
     }
     g_url[0]=0; g_url_len=0; g_out[0]=0; g_out_len=0;
     g_speed[0]=0; g_speed_len=0; g_sched[0]=0; g_sched_len=0;
+    g_add_ua[0]=0; g_add_ua_len=0; g_add_hdrs[0]=0; g_add_hdrs_len=0;
     g_add_queue=-1; g_show_add=0;
 }
 
@@ -584,6 +725,16 @@ static void draw_add_modal(struct nk_context *ctx, int win_w, int win_h) {
         queue_combo(ctx, &g_add_queue, "Download now");
         nk_layout_row_end(ctx);
 
+        nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, "User-Agent (optional):", NK_TEXT_LEFT);
+        nk_layout_row_dynamic(ctx, 26, 1);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_add_ua, &g_add_ua_len,
+                       sizeof(g_add_ua)-1, nk_filter_default);
+
+        nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, "Extra headers, one Name: value per line:", NK_TEXT_LEFT);
+        nk_layout_row_dynamic(ctx, 64, 1);
+        nk_edit_string(ctx, NK_EDIT_BOX, g_add_hdrs, &g_add_hdrs_len,
+                       sizeof(g_add_hdrs)-1, nk_filter_default);
+
         nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
         nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "Download")) submit_add();
@@ -591,6 +742,7 @@ static void draw_add_modal(struct nk_context *ctx, int win_w, int win_h) {
         if (nk_button_label(ctx, "Cancel")) {
             g_url[0]=0; g_url_len=0; g_out[0]=0; g_out_len=0;
             g_speed[0]=0; g_speed_len=0; g_sched[0]=0; g_sched_len=0;
+            g_add_ua[0]=0; g_add_ua_len=0; g_add_hdrs[0]=0; g_add_hdrs_len=0;
             g_add_queue=-1; g_show_add=0;
         }
         nk_layout_row_end(ctx);
@@ -782,6 +934,24 @@ static void draw_edit_modal(struct nk_context *ctx, int win_w, int win_h) {
         nk_layout_row_push(ctx, 0.5f);
         queue_combo(ctx, &g_edit_queue, "Run immediately");
         nk_layout_row_end(ctx);
+
+        nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, "User-Agent:", NK_TEXT_LEFT);
+        nk_layout_row_dynamic(ctx, 26, 1);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_edit_ua, &g_edit_ua_len,
+                       sizeof(g_edit_ua)-1, nk_filter_default);
+        nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, "Referer:", NK_TEXT_LEFT);
+        nk_layout_row_dynamic(ctx, 26, 1);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_edit_referer, &g_edit_referer_len,
+                       sizeof(g_edit_referer)-1, nk_filter_default);
+        nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, "Cookie:", NK_TEXT_LEFT);
+        nk_layout_row_dynamic(ctx, 26, 1);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_edit_cookie, &g_edit_cookie_len,
+                       sizeof(g_edit_cookie)-1, nk_filter_default);
+        nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, "Extra headers, one Name: value per line:", NK_TEXT_LEFT);
+        nk_layout_row_dynamic(ctx, 64, 1);
+        nk_edit_string(ctx, NK_EDIT_BOX, g_edit_hdrs, &g_edit_hdrs_len,
+                       sizeof(g_edit_hdrs)-1, nk_filter_default);
+
         nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
         nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "Apply")) {
@@ -789,6 +959,9 @@ static void draw_edit_modal(struct nk_context *ctx, int win_w, int win_h) {
                              g_edit_url_len ? g_edit_url : NULL,
                              g_edit_out_len ? g_edit_out : NULL,
                              parse_speed(g_edit_speed), g_edit_queue);
+            cdm_manager_edit_net(g_mgr, g_edit_id,
+                                 g_edit_ua, g_edit_referer, g_edit_cookie,
+                                 g_edit_hdrs);
             g_show_edit = 0;
         }
         nk_layout_row_push(ctx, 0.5f);
@@ -1031,6 +1204,7 @@ int main(int argc, char **argv) {
         if (g_show_add)    draw_add_modal(ctx, w, h);
         if (g_show_batch)  draw_batch_modal(ctx, w, h);
         if (g_show_queues) draw_queues_modal(ctx, w, h);
+        if (g_show_net)    draw_net_modal(ctx, w, h);
         if (g_show_edit)   draw_edit_modal(ctx, w, h);
         if (g_show_props)  draw_props_modal(ctx);
         if (g_show_opts)   draw_opts_modal(ctx);

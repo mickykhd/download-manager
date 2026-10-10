@@ -111,6 +111,11 @@ cdm_status cdm_run_transfers(struct cdm_download *d);
 int cdm_error_is_permanent(CURLcode code, long http_status);
 double cdm_backoff_seconds(int attempt);                 /* exponential + jitter */
 
+/* connopts.c: UA/referer/cookie/headers/proxy from cfg. Appends to *slist
+ * when slist != NULL (caller applies CURLOPT_HTTPHEADER). */
+void cdm_apply_conn_opts(CURL *c, const cdm_config *cfg,
+                         struct curl_slist **slist);
+
 /* resume.c */
 int cdm_meta_load(struct cdm_download *d);   /* 1 if valid resumable state loaded */
 int cdm_meta_save(struct cdm_download *d);
