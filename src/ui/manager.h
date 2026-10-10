@@ -159,6 +159,8 @@ void cdm_manager_pause_all(cdm_manager *m);
 void cdm_manager_resume_all(cdm_manager *m);
 /* 1 when any job is running, else 0. */
 int cdm_manager_any_running(cdm_manager *m);
+/* 1 when nothing is running and nothing is queued, else 0. */
+int cdm_manager_idle(cdm_manager *m);
 
 /* Queue controls */
 void cdm_manager_add_to_queue(cdm_manager *m, int id);
@@ -240,6 +242,10 @@ typedef struct {
     int preserve_time;
     char proxy_user[256];
     char proxy_pass[256];
+    int prog_popup;  /* show progress dialog when a download starts */
+    int done_popup;  /* show completion dialog when a download finishes */
+    int confirm_exit;/* confirm quit while downloads are active */
+    int sounds;      /* completion/error sounds */
 } cdm_settings;
 
 void cdm_settings_default(cdm_settings *s);

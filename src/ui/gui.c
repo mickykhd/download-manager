@@ -164,11 +164,84 @@ static int g_update_check = 1;
 static int g_tray_icon = 1;
 static int g_tray_minimize = 0;
 static int g_tray_up = 0;
+static int g_prog_popup = 1;
+static int g_done_popup = 1;
+static int g_confirm_exit = 1;
+static int g_sounds = 1;
+
+/* progress / completion / error / confirm / power dialog state */
+static int g_show_progress = 0;
+static int g_progress_id = -1;
+static int g_show_done = 0;
+static int g_done_id = -1;
+static int g_show_err = 0;
+static int g_err_id = -1;
+static int g_show_confirm = 0;
+static int g_power_action = 0; /* 0 off, 1 shutdown, 2 sleep, 3 hibernate */
+static time_t g_power_deadline = 0; /* countdown target, 0 = idle */
+
+/* transition tracking so popups/balloons/sounds fire exactly once */
+#define CDM_SEEN_CAP 256
+static int g_run_seen[1024]; static int g_n_run = 0;
+static int g_done_seen[CDM_SEEN_CAP]; static int g_n_done = 0;
+static int g_err_seen[CDM_SEEN_CAP]; static int g_n_err = 0;
+static int seen_has(int *a, int n, int id) {
+    for (int k = 0; k < n; k++) if (a[k] == id) return 1;
+    return 0;
+}
+static void seen_add(int *a, int *n, int cap, int id) {
+    if (seen_has(a, *n, id)) return;
+    if (*n >= cap) {
+        memmove(a, a + 1, (size_t)(cap - 1) * sizeof(int));
+        (*n)--;
+    }
+    a[(*n)++] = id;
+}
+
+static void play_sound(int kind) {
+    if (!g_sounds) return;
+#ifdef _WIN32
+    MessageBeep(kind ? MB_ICONHAND : MB_ICONASTERISK);
+#else
+    (void)kind;
+#endif
+}
+
+static void run_power_action(void) {
+    int a = g_power_action;
+    g_power_action = 0;
+    g_power_deadline = 0;
+    if (a == 1) {
+#ifdef _WIN32
+        ShellExecuteA(NULL, "open", "shutdown.exe", "/s /t 30",
+                      NULL, SW_HIDE);
+#else
+        system("shutdown -h +1 \"cdm: downloads finished\" &");
+#endif
+    } else if (a == 2 || a == 3) {
+#ifdef _WIN32
+        typedef BOOL (WINAPI *suspend_fn)(BOOL, BOOL, BOOL);
+        HMODULE pm = LoadLibraryA("powrprof.dll");
+        if (pm) {
+            suspend_fn fn = (suspend_fn)GetProcAddress(pm, "SetSuspendState");
+            if (fn) fn(a == 3, FALSE, FALSE);
+            FreeLibrary(pm);
+        }
+#else
+        system(a == 3 ? "systemctl hibernate &" : "systemctl suspend &");
+#endif
+    }
+}
 static int g_update_state = 0; /* cdm_update_poll result cache */
 static char g_update_tag[64] = {0};
 
-/* Close button: hide to tray when enabled, else quit. */
+/* Close button: confirm while active, hide to tray when enabled. */
 static void on_close(GLFWwindow *w) {
+    if (g_confirm_exit && cdm_manager_any_running(g_mgr)) {
+        g_show_confirm = 1;
+        glfwSetWindowShouldClose(w, GLFW_FALSE);
+        return;
+    }
     if (g_tray_close && g_tray_up) {
         glfwHideWindow(w);
         glfwSetWindowShouldClose(w, GLFW_FALSE);
@@ -944,6 +1017,10 @@ static void persist_settings(void) {
     st.update_check = g_update_check;
     st.tray_icon = g_tray_icon;
     st.tray_minimize = g_tray_minimize;
+    st.prog_popup = g_prog_popup;
+    st.done_popup = g_done_popup;
+    st.confirm_exit = g_confirm_exit;
+    st.sounds = g_sounds;
     st.dup_mode = g_mgr->dup_mode;
     st.ignore_ssl = g_mgr->ignore_ssl;
     st.sparse = g_mgr->sparse;
@@ -1199,6 +1276,7 @@ static void draw_opts_modal(struct nk_context *ctx) {
         static int dlg_maxact = -1, dlg_theme = -1, dlg_skin = -1;
         static int dlg_tray = -1, dlg_auto = -1, dlg_upd = -1, dlg_path = -1;
         static int dlg_ticon = -1, dlg_tmin = -1, dlg_dup = -1;
+        static int dlg_prog = -1, dlg_done = -1, dlg_confirm = -1, dlg_snd = -1;
         if (dlg_maxact < 0) {
             dlg_maxact = g_mgr->max_active;
             dlg_theme = g_theme;
@@ -1210,6 +1288,10 @@ static void draw_opts_modal(struct nk_context *ctx) {
             dlg_ticon = g_tray_icon;
             dlg_tmin = g_tray_minimize;
             dlg_dup = g_mgr->dup_mode;
+            dlg_prog = g_prog_popup;
+            dlg_done = g_done_popup;
+            dlg_confirm = g_confirm_exit;
+            dlg_snd = g_sounds;
         }
         nk_layout_row_dynamic(ctx, 24, 1); nk_label(ctx, "Max concurrent downloads:", NK_TEXT_LEFT);
         nk_layout_row_dynamic(ctx, 26, 1);
@@ -1250,6 +1332,15 @@ static void draw_opts_modal(struct nk_context *ctx) {
           dlg_dup=nk_combo(ctx,dm,2,dlg_dup,18,nk_vec2(140,60)); }
         nk_layout_row_end(ctx);
 
+        nk_layout_row_dynamic(ctx, 24, 1);
+        nk_checkbox_label(ctx, "Progress dialog on start", &dlg_prog);
+        nk_layout_row_dynamic(ctx, 24, 1);
+        nk_checkbox_label(ctx, "Completion dialog on finish", &dlg_done);
+        nk_layout_row_dynamic(ctx, 24, 1);
+        nk_checkbox_label(ctx, "Confirm exit while active", &dlg_confirm);
+        nk_layout_row_dynamic(ctx, 24, 1);
+        nk_checkbox_label(ctx, "Sounds", &dlg_snd);
+
         nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
         nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "Apply")) {
@@ -1258,6 +1349,10 @@ static void draw_opts_modal(struct nk_context *ctx) {
             g_tray_close = dlg_tray ? 1 : 0;
             g_tray_minimize = dlg_tmin ? 1 : 0;
             g_update_check = dlg_upd ? 1 : 0;
+            g_prog_popup = dlg_prog ? 1 : 0;
+            g_done_popup = dlg_done ? 1 : 0;
+            g_confirm_exit = dlg_confirm ? 1 : 0;
+            g_sounds = dlg_snd ? 1 : 0;
             g_mgr->dup_mode = dlg_dup ? 1 : 0;
             if (!!g_tray_icon != !!dlg_ticon) {
                 g_tray_icon = dlg_ticon ? 1 : 0;
@@ -1277,6 +1372,7 @@ static void draw_opts_modal(struct nk_context *ctx) {
             dlg_maxact = dlg_theme = dlg_skin = -1;
             dlg_tray = dlg_auto = dlg_upd = dlg_path = -1; /* re-seed next open */
             dlg_ticon = dlg_tmin = dlg_dup = -1;
+            dlg_prog = dlg_done = dlg_confirm = dlg_snd = -1;
             g_show_opts=0;
         }
         nk_layout_row_push(ctx, 0.5f);
@@ -1284,6 +1380,7 @@ static void draw_opts_modal(struct nk_context *ctx) {
             dlg_maxact = dlg_theme = dlg_skin = -1; /* discard staged edits */
             dlg_tray = dlg_auto = dlg_upd = dlg_path = -1;
             dlg_ticon = dlg_tmin = dlg_dup = -1;
+            dlg_prog = dlg_done = dlg_confirm = dlg_snd = -1;
             g_show_opts=0;
         }
         nk_layout_row_end(ctx);
@@ -1329,6 +1426,185 @@ static void draw_sched_modal(struct nk_context *ctx) {
         }
         nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "Close")) g_show_sched=0;
+        nk_layout_row_end(ctx);
+
+        nk_layout_row_dynamic(ctx, 22, 1);
+        nk_label(ctx, "When everything finishes:", NK_TEXT_LEFT);
+        nk_layout_row_dynamic(ctx, 26, 1);
+        { const char *pa[4]={"Nothing","Shutdown","Sleep","Hibernate"};
+          if (g_power_action < 0 || g_power_action > 3) g_power_action = 0;
+          g_power_action=nk_combo(ctx,pa,4,g_power_action,18,nk_vec2(160,110)); }
+    }
+    nk_end(ctx);
+}
+
+static const char *job_display_name(cdm_job *j, char *buf, size_t cap) {
+    const char *bn;
+    if (j->outpath[0]) bn = strrchr(j->outpath, '/');
+    else bn = strrchr(j->url, '/');
+#ifdef _WIN32
+    {
+        const char *b2 = strrchr(j->outpath[0] ? j->outpath : j->url, '\\');
+        if (b2 && (!bn || b2 > bn)) bn = b2;
+    }
+#endif
+    if (bn) bn++;
+    else bn = j->outpath[0] ? j->outpath : j->url;
+    snprintf(buf, cap, "%s", bn);
+    return buf;
+}
+
+static void draw_progress_modal(struct nk_context *ctx, int win_w, int win_h) {
+    cdm_job *j = (g_progress_id >= 0) ? cdm_manager_find(g_mgr, g_progress_id) : NULL;
+    if (!j || (j->state != JOB_RUNNING && j->state != JOB_PAUSED)) {
+        g_show_progress = 0;
+        return;
+    }
+    {
+        struct nk_rect r = nk_rect(win_w/2 - 220, win_h/2 - 90, 440, 180);
+        char nm[256], dl[32], tot[32], spd[32], eta[16];
+        cdm_progress p;
+        cdm_mutex_lock(j->mtx);
+        p = j->prog;
+        job_display_name(j, nm, sizeof(nm));
+        cdm_mutex_unlock(j->mtx);
+        human_bytes(p.total_bytes > 0 ? (double)p.total_bytes : 0, tot, sizeof(tot));
+        human_bytes((double)p.downloaded_bytes, dl, sizeof(dl));
+        human_bytes(p.speed_bps, spd, sizeof(spd));
+        fmt_eta(p.eta_seconds, eta, sizeof(eta));
+        if (nk_begin(ctx, "Downloading", r,
+                     NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_MOVABLE)) {
+            nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, nm, NK_TEXT_LEFT);
+            nk_layout_row_dynamic(ctx, 24, 1);
+            { nk_size cur = 0, mx = 100;
+              if (p.total_bytes > 0 && p.downloaded_bytes > 0)
+                  cur = (nk_size)(100.0*(double)p.downloaded_bytes/(double)p.total_bytes);
+              nk_progress(ctx, &cur, mx, NK_FIXED); }
+            { char st[128];
+              snprintf(st, sizeof st, "%s / %s  %s/s  ETA %s", dl, tot, spd, eta);
+              nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, st, NK_TEXT_LEFT); }
+            nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
+            nk_layout_row_push(ctx, 0.5f);
+            if (nk_button_label(ctx, "Stop")) cdm_manager_stop(g_mgr, j->id);
+            nk_layout_row_push(ctx, 0.5f);
+            if (nk_button_label(ctx, "Hide")) g_show_progress = 0;
+            nk_layout_row_end(ctx);
+        }
+        nk_end(ctx);
+    }
+}
+
+static void draw_done_modal(struct nk_context *ctx, int win_w, int win_h) {
+    cdm_job *j = (g_done_id >= 0) ? cdm_manager_find(g_mgr, g_done_id) : NULL;
+    if (!j || j->state != JOB_DONE) { g_show_done = 0; return; }
+    {
+        struct nk_rect r = nk_rect(win_w/2 - 220, win_h/2 - 80, 440, 160);
+        char nm[256];
+        job_display_name(j, nm, sizeof(nm));
+        if (nk_begin(ctx, "Download complete", r,
+                     NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_MOVABLE)) {
+            nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, nm, NK_TEXT_LEFT);
+            nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 3);
+            nk_layout_row_push(ctx, 0.34f);
+            if (nk_button_label(ctx, "Open folder")) {
+                char dir[2048];
+                snprintf(dir, sizeof(dir), "%s", j->outpath);
+                { char *s = strrchr(dir, '/');
+#ifdef _WIN32
+                  char *b = strrchr(dir, '\\');
+                  if (b && (!s || b > s)) s = b;
+#endif
+                  if (s) *s = 0; }
+#ifdef _WIN32
+                ShellExecuteA(NULL, "open", dir[0] ? dir : ".",
+                              NULL, NULL, SW_SHOWNORMAL);
+#else
+                open_url(dir[0] ? dir : ".");
+#endif
+            }
+            nk_layout_row_push(ctx, 0.33f);
+            if (nk_button_label(ctx, "Delete entry")) {
+                cdm_manager_remove(g_mgr, j->id);
+                g_show_done = 0;
+            }
+            nk_layout_row_push(ctx, 0.33f);
+            if (nk_button_label(ctx, "OK")) g_show_done = 0;
+            nk_layout_row_end(ctx);
+        }
+        nk_end(ctx);
+    }
+}
+
+static void draw_err_modal(struct nk_context *ctx, int win_w, int win_h) {
+    cdm_job *j = (g_err_id >= 0) ? cdm_manager_find(g_mgr, g_err_id) : NULL;
+    if (!j || j->state != JOB_ERROR) { g_show_err = 0; return; }
+    {
+        struct nk_rect r = nk_rect(win_w/2 - 220, win_h/2 - 90, 440, 180);
+        char nm[256], msg[256];
+        job_display_name(j, nm, sizeof(nm));
+        cdm_mutex_lock(j->mtx);
+        snprintf(msg, sizeof(msg), "%s", j->errmsg);
+        cdm_mutex_unlock(j->mtx);
+        if (nk_begin(ctx, "Download failed", r,
+                     NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_MOVABLE)) {
+            nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, nm, NK_TEXT_LEFT);
+            nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, msg, NK_TEXT_LEFT);
+            nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 3);
+            nk_layout_row_push(ctx, 0.34f);
+            if (nk_button_label(ctx, "Retry")) {
+                cdm_manager_resume(g_mgr, j->id);
+                g_show_err = 0;
+            }
+            nk_layout_row_push(ctx, 0.33f);
+            if (nk_button_label(ctx, "Delete")) {
+                cdm_manager_remove(g_mgr, j->id);
+                g_show_err = 0;
+            }
+            nk_layout_row_push(ctx, 0.33f);
+            if (nk_button_label(ctx, "Close")) g_show_err = 0;
+            nk_layout_row_end(ctx);
+        }
+        nk_end(ctx);
+    }
+}
+
+static void draw_confirm_modal(struct nk_context *ctx, int win_w, int win_h) {
+    struct nk_rect r = nk_rect(win_w/2 - 200, win_h/2 - 80, 400, 160);
+    if (nk_begin(ctx, "Quit?", r,
+                 NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_MOVABLE)) {
+        nk_layout_row_dynamic(ctx, 22, 1);
+        nk_label(ctx, "Downloads are still active.", NK_TEXT_LEFT);
+        nk_layout_row_dynamic(ctx, 22, 1);
+        nk_label(ctx, "Quit anyway?", NK_TEXT_LEFT);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
+        nk_layout_row_push(ctx, 0.5f);
+        if (nk_button_label(ctx, "Quit")) { g_quit = 1; g_show_confirm = 0; }
+        nk_layout_row_push(ctx, 0.5f);
+        if (nk_button_label(ctx, "Cancel")) g_show_confirm = 0;
+        nk_layout_row_end(ctx);
+    }
+    nk_end(ctx);
+}
+
+static void draw_power_modal(struct nk_context *ctx, int win_w, int win_h) {
+    struct nk_rect r = nk_rect(win_w/2 - 200, win_h/2 - 80, 400, 160);
+    long left = (long)(g_power_deadline - time(NULL));
+    const char *what = g_power_action == 1 ? "shutdown" :
+                       g_power_action == 2 ? "sleep" : "hibernate";
+    if (left < 0) left = 0;
+    if (nk_begin(ctx, "Power", r,
+                 NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_MOVABLE)) {
+        char line[128];
+        snprintf(line, sizeof(line), "All done: %s in %ld s", what, left);
+        nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, line, NK_TEXT_LEFT);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
+        nk_layout_row_push(ctx, 0.5f);
+        if (nk_button_label(ctx, "Do it now")) run_power_action();
+        nk_layout_row_push(ctx, 0.5f);
+        if (nk_button_label(ctx, "Cancel")) {
+            g_power_action = 0;
+            g_power_deadline = 0;
+        }
         nk_layout_row_end(ctx);
     }
     nk_end(ctx);
@@ -1420,6 +1696,10 @@ int main(int argc, char **argv) {
         snprintf(g_net_proxy_url, sizeof(g_net_proxy_url), "%s", g_mgr->proxy_url);
         g_net_proxy_url_len = (int)strlen(g_net_proxy_url);
         g_tray_close = st.tray_close;
+        g_prog_popup = st.prog_popup;
+        g_done_popup = st.done_popup;
+        g_confirm_exit = st.confirm_exit;
+        g_sounds = st.sounds;
         g_autostart = cdm_autostart_get();
         g_update_check = st.update_check;
         g_tray_icon = st.tray_icon;
@@ -1427,6 +1707,12 @@ int main(int argc, char **argv) {
         restart_ipc_server();
         /* restore last session's job list (history + queued) */
         cdm_manager_load_jobs(g_mgr);
+        /* don't re-announce restored history */
+        for (int i = 0; i < g_mgr->count; i++) {
+            cdm_job *jj = g_mgr->jobs[i];
+            if (jj->state == JOB_DONE) seen_add(g_done_seen, &g_n_done, CDM_SEEN_CAP, jj->id);
+            else if (jj->state == JOB_ERROR) seen_add(g_err_seen, &g_n_err, CDM_SEEN_CAP, jj->id);
+        }
         if (g_update_check)
             cdm_update_check_async("mickykhd/download-manager");
     }
@@ -1499,6 +1785,11 @@ int main(int argc, char **argv) {
         if (g_show_opts)   draw_opts_modal(ctx);
         if (g_show_sched)  draw_sched_modal(ctx);
         if (g_show_about)  draw_about_modal(ctx);
+        if (g_show_progress) draw_progress_modal(ctx, w, h);
+        if (g_show_done)   draw_done_modal(ctx, w, h);
+        if (g_show_err)    draw_err_modal(ctx, w, h);
+        if (g_show_confirm) draw_confirm_modal(ctx, w, h);
+        if (g_power_deadline) draw_power_modal(ctx, w, h);
 
         cdm_manager_pump(g_mgr);
         cdm_manager_reap(g_mgr);
@@ -1506,10 +1797,13 @@ int main(int argc, char **argv) {
         /* tray requests + tooltip + completion notifications */
         {
             static int tick = 0;
-            static int notified[256];
-            static int n_notified = 0;
             tick++;
-            if (cdm_tray_exit_requested()) break;
+            if (cdm_tray_exit_requested()) {
+                if (g_confirm_exit && cdm_manager_any_running(g_mgr)) {
+                    g_show_confirm = 1;
+                    show_main_window(win);
+                } else break;
+            }
             if (cdm_tray_show_requested()) show_main_window(win);
             if (cdm_tray_add_url_requested()) {
                 g_url[0] = 0; g_url_len = 0;
@@ -1545,10 +1839,68 @@ int main(int argc, char **argv) {
                     }
                 }
             }
+            /* transitions: exactly-once popups, balloons, sounds */
+            {
+                int cur_run[1024], n_cur = 0;
+                char ev_name[256] = {0}, ev_err[256] = {0};
+                int ev_done_id = -1, ev_err_id = -1, ev_run_id = -1;
+                cdm_mutex_lock(g_mgr->mtx);
+                for (int i = 0; i < g_mgr->count; i++) {
+                    cdm_job *jj = g_mgr->jobs[i];
+                    cdm_mutex_lock(jj->mtx);
+                    if (jj->state == JOB_RUNNING) {
+                        if (n_cur < 1024) cur_run[n_cur++] = jj->id;
+                        if (!seen_has(g_run_seen, g_n_run, jj->id))
+                            ev_run_id = jj->id;
+                    } else if (jj->state == JOB_DONE &&
+                               !seen_has(g_done_seen, g_n_done, jj->id)) {
+                        job_display_name(jj, ev_name, sizeof(ev_name));
+                        ev_done_id = jj->id;
+                    } else if (jj->state == JOB_ERROR &&
+                               !seen_has(g_err_seen, g_n_err, jj->id)) {
+                        job_display_name(jj, ev_name, sizeof(ev_name));
+                        snprintf(ev_err, sizeof(ev_err), "%s", jj->errmsg);
+                        ev_err_id = jj->id;
+                    }
+                    cdm_mutex_unlock(jj->mtx);
+                    /* no early break: the running set below must be complete;
+                     * extra events surface on following frames */
+                }
+                cdm_mutex_unlock(g_mgr->mtx);
+                /* rebuild running set (re-runs re-trigger) */
+                g_n_run = n_cur < 1024 ? n_cur : 1024;
+                for (int i = 0; i < g_n_run; i++) g_run_seen[i] = cur_run[i];
+                if (ev_run_id >= 0 && g_prog_popup && !g_show_progress) {
+                    g_progress_id = ev_run_id;
+                    g_show_progress = 1;
+                }
+                if (ev_done_id >= 0) {
+                    seen_add(g_done_seen, &g_n_done, CDM_SEEN_CAP, ev_done_id);
+                    cdm_tray_notify("Download complete", ev_name);
+                    play_sound(0);
+                    if (g_done_popup && !g_show_done) {
+                        g_done_id = ev_done_id;
+                        g_show_done = 1;
+                    }
+                }
+                if (ev_err_id >= 0) {
+                    seen_add(g_err_seen, &g_n_err, CDM_SEEN_CAP, ev_err_id);
+                    {
+                        char msg[300];
+                        snprintf(msg, sizeof(msg), "%.240s: %.40s", ev_name, ev_err);
+                        cdm_tray_notify("Download failed", msg);
+                    }
+                    play_sound(1);
+                    if (!g_show_err) {
+                        g_err_id = ev_err_id;
+                        g_show_err = 1;
+                    }
+                }
+            }
             if ((tick % 120) == 0) {
                 int active = 0;
                 double spd = 0;
-                char tip[128], nm[256] = {0};
+                char tip[128];
                 cdm_mutex_lock(g_mgr->mtx);
                 for (int i = 0; i < g_mgr->count; i++) {
                     cdm_job *jj = g_mgr->jobs[i];
@@ -1557,18 +1909,7 @@ int main(int argc, char **argv) {
                         active++;
                         spd += jj->prog.speed_bps;
                     }
-                    if (jj->state == JOB_DONE) {
-                        int seen = 0;
-                        for (int k = 0; k < n_notified; k++)
-                            if (notified[k] == jj->id) { seen = 1; break; }
-                        if (!seen) {
-                            const char *bn = strrchr(jj->outpath[0] ? jj->outpath : jj->url, '/');
-                            snprintf(nm, sizeof(nm), "%s", bn ? bn + 1 : jj->url);
-                            if (n_notified < 256) notified[n_notified++] = jj->id;
-                        }
-                    }
                     cdm_mutex_unlock(jj->mtx);
-                    if (nm[0]) break; /* one balloon per cycle */
                 }
                 cdm_mutex_unlock(g_mgr->mtx);
                 if (active > 0) {
@@ -1579,7 +1920,17 @@ int main(int argc, char **argv) {
                     snprintf(tip, sizeof(tip), "cdm Download Manager");
                 }
                 cdm_tray_tooltip(tip);
-                if (nm[0]) cdm_tray_notify("Download complete", nm);
+            }
+            /* power action countdown */
+            if (g_power_action) {
+                if (cdm_manager_idle(g_mgr)) {
+                    if (!g_power_deadline)
+                        g_power_deadline = time(NULL) + 60;
+                    else if (time(NULL) >= g_power_deadline)
+                        run_power_action();
+                } else {
+                    g_power_deadline = 0;
+                }
             }
         }
 

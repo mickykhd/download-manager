@@ -400,6 +400,10 @@ void cdm_settings_default(cdm_settings *s) {
     s->preserve_time = 1;
     s->proxy_user[0] = 0;
     s->proxy_pass[0] = 0;
+    s->prog_popup = 1;
+    s->done_popup = 1;
+    s->confirm_exit = 1;
+    s->sounds = 1;
 }
 
 static int clamp_int(int v, int lo, int hi) {
@@ -575,6 +579,14 @@ void cdm_settings_load(cdm_manager *m, cdm_settings *s) {
             s->sparse = val ? 1 : 0;
         else if (strcmp(key, "preserve_time") == 0)
             s->preserve_time = val ? 1 : 0;
+        else if (strcmp(key, "prog_popup") == 0)
+            s->prog_popup = val ? 1 : 0;
+        else if (strcmp(key, "done_popup") == 0)
+            s->done_popup = val ? 1 : 0;
+        else if (strcmp(key, "confirm_exit") == 0)
+            s->confirm_exit = val ? 1 : 0;
+        else if (strcmp(key, "sounds") == 0)
+            s->sounds = val ? 1 : 0;
         /* unknown keys ignored for forward compatibility */
     }
     fclose(f);
@@ -628,6 +640,10 @@ int cdm_settings_save(const cdm_manager *m, const cdm_settings *s) {
     fprintf(f, "ignore_ssl %d\n", s->ignore_ssl ? 1 : 0);
     fprintf(f, "sparse %d\n", s->sparse ? 1 : 0);
     fprintf(f, "preserve_time %d\n", s->preserve_time ? 1 : 0);
+    fprintf(f, "prog_popup %d\n", s->prog_popup ? 1 : 0);
+    fprintf(f, "done_popup %d\n", s->done_popup ? 1 : 0);
+    fprintf(f, "confirm_exit %d\n", s->confirm_exit ? 1 : 0);
+    fprintf(f, "sounds %d\n", s->sounds ? 1 : 0);
     if (s->proxy_user[0])
         fprintf(f, "proxy_user %s\n", s->proxy_user);
     if (s->proxy_pass[0])
@@ -1409,6 +1425,20 @@ int cdm_manager_any_running(cdm_manager *m) {
     }
     cdm_mutex_unlock(m->mtx);
     return r;
+}
+
+int cdm_manager_idle(cdm_manager *m) {
+    int idle = 1;
+    cdm_mutex_lock(m->mtx);
+    for (int i = 0; i < m->count; i++) {
+        cdm_job *j = m->jobs[i];
+        cdm_mutex_lock(j->mtx);
+        if (j->running || j->state == JOB_QUEUED) idle = 0;
+        cdm_mutex_unlock(j->mtx);
+        if (!idle) break;
+    }
+    cdm_mutex_unlock(m->mtx);
+    return idle;
 }
 
 void cdm_manager_delete_all_completed(cdm_manager *m) {
