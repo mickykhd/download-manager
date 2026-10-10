@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 480px; padding: 16px; }
+    h3 { margin-top: 0; }
+    label { display: block; margin: 10px 0 4px; font-weight: 600; }
+    input[type="text"], input[type="number"] { width: 100%; box-sizing: border-box; padding: 6px; }
+    .hint { font-size: 12px; color: #555; margin: 2px 0 0; }
+    #saved { color: #1e8449; min-height: 18px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h3>cdm Bridge options</h3>
+  <label><input type="checkbox" id="autoCapture" /> Capture browser downloads automatically</label>
+  <p class="hint">When on, files you download in the browser are cancelled here and fetched by cdm instead.</p>
+
+  <label>Connection</label>
+  <label><input type="radio" name="mode" value="rest" /> REST server (recommended)</label>
+  <label><input type="radio" name="mode" value="native" /> Native messaging host</label>
+
+  <label for="port">Server port (REST mode)</label>
+  <input id="port" type="number" min="1" max="65535" />
+  <p class="hint">Must match the port in cdm → Network dialog. Default 15151.</p>
+
+  <label for="apiKey">API key (optional)</label>
+  <input id="apiKey" type="text" autocomplete="off" />
+  <p class="hint">Must match the key in cdm → Network dialog when set there.</p>
+
+  <p><button id="save">Save</button> <span id="saved"></span></p>
+  <p class="hint">Native messaging mode additionally needs
+    <code>cdm --register-native-host</code> on the computer (see
+    <code>docs/browser-integration.md</code> in the cdm repo).</p>
+  <script src="options.js"></script>
+</body>
+</html>

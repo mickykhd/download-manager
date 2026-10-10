@@ -4,6 +4,11 @@ cdm exposes a local REST server plus a Native Messaging host bridge, so
 browser extensions (or scripts) can send links to the running app without
 touching its windows.
 
+A ready-made extension lives in [`browser/extension/`](../browser/extension/)
+(Manifest V3, Chrome + Firefox, REST-first with native-messaging fallback).
+Load it unpacked per [`browser/extension/README.md`](../browser/extension/README.md)
+while it is waiting for store publishing.
+
 ## 1. Enable the server
 
 GUI: **Network** dialog → check *Browser integration server*, set a port

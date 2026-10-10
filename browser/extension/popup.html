@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { font-family: system-ui, sans-serif; width: 300px; padding: 12px; }
+    h3 { margin: 0 0 8px; font-size: 15px; }
+    #status { font-size: 12px; margin: 6px 0; min-height: 16px; }
+    input { width: 100%; box-sizing: border-box; padding: 6px; margin: 4px 0; }
+    button { padding: 6px 10px; margin: 4px 4px 0 0; cursor: pointer; }
+    .ok { color: #1e8449; }
+    .err { color: #c0392b; }
+    a { font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h3>cdm Browser Bridge</h3>
+  <div id="status">…</div>
+  <input id="url" type="url" placeholder="https://example.com/file.zip" />
+  <div>
+    <button id="add">Send to cdm</button>
+    <button id="tab">Send this tab</button>
+  </div>
+  <p><a href="options.html" target="_blank">Options</a></p>
+  <script src="popup.js"></script>
+</body>
+</html>
