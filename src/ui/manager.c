@@ -278,6 +278,9 @@ void cdm_settings_default(cdm_settings *s) {
     s->api_enabled = 0;
     s->api_port = 0;
     s->api_key[0] = 0;
+    s->tray_close = 0;
+    s->autostart = 0;
+    s->update_check = 1;
 }
 
 static int clamp_int(int v, int lo, int hi) {
@@ -381,6 +384,12 @@ void cdm_settings_load(cdm_manager *m, cdm_settings *s) {
             s->api_enabled = val ? 1 : 0;
         else if (strcmp(key, "api_port") == 0)
             s->api_port = (val > 0 && val < 65536) ? val : 0;
+        else if (strcmp(key, "tray_close") == 0)
+            s->tray_close = val ? 1 : 0;
+        else if (strcmp(key, "autostart") == 0)
+            s->autostart = val ? 1 : 0;
+        else if (strcmp(key, "update_check") == 0)
+            s->update_check = val ? 1 : 0;
         /* unknown keys ignored for forward compatibility */
     }
     fclose(f);
@@ -419,6 +428,9 @@ int cdm_settings_save(const cdm_manager *m, const cdm_settings *s) {
     fprintf(f, "skin %d\n", clamp_int(s->skin, 0, 3));
     fprintf(f, "api_enabled %d\n", s->api_enabled ? 1 : 0);
     fprintf(f, "api_port %d\n", s->api_port);
+    fprintf(f, "tray_close %d\n", s->tray_close ? 1 : 0);
+    fprintf(f, "autostart %d\n", s->autostart ? 1 : 0);
+    fprintf(f, "update_check %d\n", s->update_check ? 1 : 0);
     if (s->api_key[0])
         fprintf(f, "api_key %s\n", s->api_key);
     if (m) {

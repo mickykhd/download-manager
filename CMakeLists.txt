@@ -124,12 +124,21 @@ if(CDM_BUILD_GUI)
     if(NOT OPENGL_FOUND OR NOT GLEW_FOUND OR (NOT GLFW_LIB AND NOT glfw3_FOUND))
         message(WARNING "CDM_BUILD_GUI=ON but OpenGL/GLEW/GLFW not found; skipping cdm-gui. Install GLFW+Glew or configure with -DCDM_BUILD_GUI=OFF.")
     else()
+        if(WIN32)
+            set(CDM_TRAY_SRC src/ui/tray_win.c)
+        else()
+            set(CDM_TRAY_SRC src/ui/tray_posix.c)
+        endif()
         add_executable(cdm-gui
             src/ui/gui.c
             src/ui/manager.c
             src/ui/ipc.c
+            src/ui/updater.c
+            ${CDM_TRAY_SRC}
             ${CDM_WIN_RES_cdm-gui}
         )
+        target_compile_definitions(cdm-gui PRIVATE
+            CDM_VERSION_STR="${PROJECT_VERSION}")
         target_include_directories(cdm-gui PRIVATE
             include
             src/engine
@@ -197,6 +206,14 @@ add_executable(test_ipc tests/test_ipc.c src/ui/manager.c src/ui/ipc.c)
 target_include_directories(test_ipc PRIVATE include src/engine src/ui)
 target_link_libraries(test_ipc PRIVATE cdmcore)
 add_test(NAME test_ipc COMMAND test_ipc)
+
+add_executable(test_update tests/test_update.c src/ui/updater.c)
+target_include_directories(test_update PRIVATE include src/engine src/ui)
+target_link_libraries(test_update PRIVATE cdmcore)
+if(WIN32)
+    target_compile_definitions(test_update PRIVATE CDM_VERSION_STR="${PROJECT_VERSION}")
+endif()
+add_test(NAME test_update COMMAND test_update)
 
 # --- Native-messaging host (stdio JSON bridge for browser extensions) ---
 add_executable(cdm-native-host src/cli/native_host.c)

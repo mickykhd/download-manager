@@ -3,6 +3,8 @@
 #endif
 #include "manager.h"
 #include "ipc.h"
+#include "tray.h"
+#include "updater.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +43,7 @@
 #endif
 #ifdef _WIN32
 #include <windows.h>
+#include <shellapi.h>
 #endif
 
 /* Single-instance guard: returns 1 when another copy is already running
@@ -139,6 +142,33 @@ static int parse_hhmm_min(const char *s) {
 static int g_show_opts = 0;
 static int g_show_sched = 0;
 static int g_show_about = 0;
+
+static int g_tray_close = 0;
+static int g_autostart = 0;
+static int g_update_check = 1;
+static int g_update_state = 0; /* cdm_update_poll result cache */
+static char g_update_tag[64] = {0};
+
+/* Close button: hide to tray when enabled, else quit. */
+static void on_close(GLFWwindow *w) {
+    if (g_tray_close) {
+        glfwHideWindow(w);
+        glfwSetWindowShouldClose(w, GLFW_FALSE);
+    }
+}
+
+static void open_url(const char *u) {
+    if (!u || !*u) return;
+#ifdef _WIN32
+    ShellExecuteA(NULL, "open", u, NULL, NULL, SW_SHOWNORMAL);
+#elif defined(__APPLE__)
+    { char cmd[2200]; snprintf(cmd, sizeof(cmd), "open '%s' &", u);
+      system(cmd); }
+#else
+    { char cmd[2200]; snprintf(cmd, sizeof(cmd), "xdg-open '%s' >/dev/null 2>&1 &", u);
+      system(cmd); }
+#endif
+}
 
 /* theme */
 static int g_theme = 0;   /* 0 dark, 1 light */
@@ -854,6 +884,9 @@ static void persist_settings(void) {
     st.api_port = atoi(g_api_port);
     if (st.api_port < 0 || st.api_port > 65535) st.api_port = 0;
     snprintf(st.api_key, sizeof(st.api_key), "%s", g_api_key);
+    st.tray_close = g_tray_close;
+    st.autostart = g_autostart;
+    st.update_check = g_update_check;
     cdm_settings_save(g_mgr, &st);
 }
 
@@ -1041,15 +1074,19 @@ static void draw_props_modal(struct nk_context *ctx) {
 }
 
 static void draw_opts_modal(struct nk_context *ctx) {
-    struct nk_rect r = nk_rect(360, 240, 360, 220);
+    struct nk_rect r = nk_rect(360, 200, 380, 330);
     if (nk_begin(ctx, "Options", r, NK_WINDOW_TITLE|NK_WINDOW_BORDER|NK_WINDOW_MOVABLE)) {
         /* Staged copies: combos/property edit these, globals change only on
          * Apply (Close discards). Seeded from live values on each opening. */
         static int dlg_maxact = -1, dlg_theme = -1, dlg_skin = -1;
+        static int dlg_tray = -1, dlg_auto = -1, dlg_upd = -1;
         if (dlg_maxact < 0) {
             dlg_maxact = g_mgr->max_active;
             dlg_theme = g_theme;
             dlg_skin = g_skin;
+            dlg_tray = g_tray_close;
+            dlg_auto = g_autostart;
+            dlg_upd = g_update_check;
         }
         nk_layout_row_dynamic(ctx, 24, 1); nk_label(ctx, "Max concurrent downloads:", NK_TEXT_LEFT);
         nk_layout_row_dynamic(ctx, 26, 1);
@@ -1069,26 +1106,34 @@ static void draw_opts_modal(struct nk_context *ctx) {
           dlg_skin=nk_combo(ctx,sk,4,dlg_skin,18,nk_vec2(120,100)); }
         nk_layout_row_end(ctx);
 
+        nk_layout_row_dynamic(ctx, 24, 1);
+        nk_checkbox_label(ctx, "Close to tray instead of quitting", &dlg_tray);
+        nk_layout_row_dynamic(ctx, 24, 1);
+        nk_checkbox_label(ctx, "Start with Windows", &dlg_auto);
+        nk_layout_row_dynamic(ctx, 24, 1);
+        nk_checkbox_label(ctx, "Check for updates at startup", &dlg_upd);
+
         nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
         nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "Apply")) {
             g_theme = dlg_theme;
             g_skin = dlg_skin;
-            cdm_manager_set_max_active(g_mgr, dlg_maxact);
-            /* Persist immediately so the setting survives a restart. */
-            {
-                cdm_settings st;
-                st.max_active = dlg_maxact;
-                st.theme = dlg_theme;
-                st.skin = dlg_skin;
-                cdm_settings_save(g_mgr, &st);
+            g_tray_close = dlg_tray ? 1 : 0;
+            g_update_check = dlg_upd ? 1 : 0;
+            if (!!g_autostart != !!dlg_auto) {
+                if (cdm_autostart_set(dlg_auto ? 1 : 0) == 0)
+                    g_autostart = dlg_auto ? 1 : 0;
             }
-            dlg_maxact = dlg_theme = dlg_skin = -1; /* re-seed next open */
+            cdm_manager_set_max_active(g_mgr, dlg_maxact);
+            persist_settings();
+            dlg_maxact = dlg_theme = dlg_skin = -1;
+            dlg_tray = dlg_auto = dlg_upd = -1; /* re-seed next open */
             g_show_opts=0;
         }
         nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "Close")) {
             dlg_maxact = dlg_theme = dlg_skin = -1; /* discard staged edits */
+            dlg_tray = dlg_auto = dlg_upd = -1;
             g_show_opts=0;
         }
         nk_layout_row_end(ctx);
@@ -1140,13 +1185,33 @@ static void draw_sched_modal(struct nk_context *ctx) {
 }
 
 static void draw_about_modal(struct nk_context *ctx) {
-    struct nk_rect r = nk_rect(380, 280, 360, 150);
+    struct nk_rect r = nk_rect(380, 260, 380, 200);
     if (nk_begin(ctx, "About", r, NK_WINDOW_TITLE|NK_WINDOW_BORDER|NK_WINDOW_MOVABLE)) {
         nk_layout_row_dynamic(ctx, 22, 1);
         nk_label(ctx, "cdm - Download Manager", NK_TEXT_LEFT);
         nk_label(ctx, "IDM-style segmented download manager.", NK_TEXT_LEFT);
         nk_label(ctx, "Engine: libcurl + HTTP Range + resume.", NK_TEXT_LEFT);
+        {
+            int st = cdm_update_poll(g_update_tag, sizeof(g_update_tag));
+            g_update_state = st;
+            if (st == 2) {
+                char line[128];
+                snprintf(line, sizeof line, "Update available: %s", g_update_tag);
+                nk_layout_row_dynamic(ctx, 22, 1);
+                nk_label(ctx, line, NK_TEXT_LEFT);
+            } else if (st == 0) {
+                nk_layout_row_dynamic(ctx, 22, 1);
+                nk_label(ctx, "Checking for updates...", NK_TEXT_LEFT);
+            }
+        }
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
+        nk_layout_row_push(ctx, 0.5f);
+        if (nk_button_label(ctx, "Get update") && g_update_state == 2) {
+            open_url("https://github.com/mickykhd/download-manager/releases/latest");
+        }
+        nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "OK")) g_show_about = 0;
+        nk_layout_row_end(ctx);
     }
     nk_end(ctx);
 }
@@ -1204,7 +1269,12 @@ int main(int argc, char **argv) {
         g_net_proxy = g_mgr->proxy_mode;
         snprintf(g_net_proxy_url, sizeof(g_net_proxy_url), "%s", g_mgr->proxy_url);
         g_net_proxy_url_len = (int)strlen(g_net_proxy_url);
+        g_tray_close = st.tray_close;
+        g_autostart = cdm_autostart_get();
+        g_update_check = st.update_check;
         restart_ipc_server();
+        if (g_update_check)
+            cdm_update_check_async("mickykhd/download-manager");
     }
 
     if (argc > 1) {
@@ -1223,11 +1293,16 @@ int main(int argc, char **argv) {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     int win_w = 1000, win_h = 640;
+    int start_hidden = 0;
+    for (int i = 1; i < argc; i++)
+        if (strcmp(argv[i], "--minimized") == 0) start_hidden = 1;
     GLFWwindow *win = glfwCreateWindow(win_w, win_h, "cdm - Download Manager", NULL, NULL);
     if (!win) { fprintf(stderr, "cdm: window create failed\n"); return 1; }
     glfwMakeContextCurrent(win);
     glfwSwapInterval(1);
     if (glewInit() != GLEW_OK) { fprintf(stderr, "cdm: GLEW init failed\n"); return 1; }
+    glfwSetWindowCloseCallback(win, on_close);
+    if (cdm_tray_init() == 0 && start_hidden) glfwHideWindow(win);
 
     struct nk_glfw nk;
     /* The backend leaves input state (text_len, key_events, scroll)
@@ -1271,6 +1346,55 @@ int main(int argc, char **argv) {
         cdm_manager_pump(g_mgr);
         cdm_manager_reap(g_mgr);
 
+        /* tray requests + tooltip + completion notifications */
+        {
+            static int tick = 0;
+            static int notified[256];
+            static int n_notified = 0;
+            tick++;
+            if (cdm_tray_exit_requested()) break;
+            if (cdm_tray_show_requested()) {
+                glfwShowWindow(win);
+                glfwFocusWindow(win);
+            }
+            if ((tick % 120) == 0) {
+                int active = 0;
+                double spd = 0;
+                char tip[128], nm[256] = {0};
+                cdm_mutex_lock(g_mgr->mtx);
+                for (int i = 0; i < g_mgr->count; i++) {
+                    cdm_job *jj = g_mgr->jobs[i];
+                    cdm_mutex_lock(jj->mtx);
+                    if (jj->state == JOB_RUNNING) {
+                        active++;
+                        spd += jj->prog.speed_bps;
+                    }
+                    if (jj->state == JOB_DONE) {
+                        int seen = 0;
+                        for (int k = 0; k < n_notified; k++)
+                            if (notified[k] == jj->id) { seen = 1; break; }
+                        if (!seen) {
+                            const char *bn = strrchr(jj->outpath[0] ? jj->outpath : jj->url, '/');
+                            snprintf(nm, sizeof(nm), "%s", bn ? bn + 1 : jj->url);
+                            if (n_notified < 256) notified[n_notified++] = jj->id;
+                        }
+                    }
+                    cdm_mutex_unlock(jj->mtx);
+                    if (nm[0]) break; /* one balloon per cycle */
+                }
+                cdm_mutex_unlock(g_mgr->mtx);
+                if (active > 0) {
+                    char hb[32];
+                    human_bytes(spd, hb, sizeof(hb));
+                    snprintf(tip, sizeof(tip), "cdm - %d active (%s/s)", active, hb);
+                } else {
+                    snprintf(tip, sizeof(tip), "cdm Download Manager");
+                }
+                cdm_tray_tooltip(tip);
+                if (nm[0]) cdm_tray_notify("Download complete", nm);
+            }
+        }
+
         /* URLs fed by the integration server -> open Add / Batch dialogs */
         {
             static char urls[CDM_MAX_PENDING_URLS][2048];
@@ -1304,6 +1428,7 @@ int main(int argc, char **argv) {
      * via combo without pressing Apply). */
     persist_settings();
     cdm_ipc_stop();
+    cdm_tray_shutdown();
     cdm_manager_destroy(g_mgr);
     cdm_global_cleanup();
     glfwTerminate();

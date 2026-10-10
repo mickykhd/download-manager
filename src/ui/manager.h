@@ -202,6 +202,9 @@ typedef struct {
     int api_enabled; /* local integration server on/off */
     int api_port;    /* 0 = default (15151) */
     char api_key[128]; /* empty = no auth */
+    int tray_close;  /* close button hides to tray instead of quitting */
+    int autostart;   /* start with OS login (managed live, persisted too) */
+    int update_check;/* check GitHub releases at startup */
 } cdm_settings;
 
 void cdm_settings_default(cdm_settings *s);
