@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(cdm C)
+project(cdm VERSION 0.2.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -87,8 +87,24 @@ if(WIN32)
     target_link_libraries(cdmcore PUBLIC ws2_32 crypt32)
 endif()
 
+# --- Windows app icon + version metadata (VERSIONINFO) ---
+if(WIN32)
+    set(CDM_RC_NAME_cdm "cdm")
+    set(CDM_RC_DESCRIPTION_cdm "cdm - segmented download manager (CLI)")
+    set(CDM_RC_NAME_cdm-gui "cdm-gui")
+    set(CDM_RC_DESCRIPTION_cdm-gui "cdm Download Manager")
+    foreach(_t cdm cdm-gui)
+        set(CDM_RC_NAME "${CDM_RC_NAME_${_t}}")
+        set(CDM_RC_DESCRIPTION "${CDM_RC_DESCRIPTION_${_t}}")
+        configure_file(cmake/version.rc.in
+            ${CMAKE_CURRENT_BINARY_DIR}/${_t}-version.rc @ONLY)
+    endforeach()
+    set(CDM_WIN_RES_cdm ${CMAKE_CURRENT_BINARY_DIR}/cdm-version.rc)
+    set(CDM_WIN_RES_cdm-gui ${CMAKE_CURRENT_BINARY_DIR}/cdm-gui-version.rc)
+endif()
+
 # --- CLI executable ---
-add_executable(cdm src/cli/main.c)
+add_executable(cdm src/cli/main.c ${CDM_WIN_RES_cdm})
 target_link_libraries(cdm PRIVATE cdmcore)
 
 # --- GUI executable (Nuklear + GLFW/OpenGL) ---
@@ -109,6 +125,7 @@ if(CDM_BUILD_GUI)
         add_executable(cdm-gui
             src/ui/gui.c
             src/ui/manager.c
+            ${CDM_WIN_RES_cdm-gui}
         )
         target_include_directories(cdm-gui PRIVATE
             include
@@ -168,7 +185,8 @@ install(TARGETS cdm RUNTIME DESTINATION bin)
 # --- Packaging (Windows installer via CPack: ZIP always, NSIS when available) ---
 set(CPACK_PACKAGE_NAME "cdm-download-manager")
 set(CPACK_PACKAGE_VENDOR "cdm")
-set(CPACK_PACKAGE_VERSION "0.1.1")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "cdm - segmented download manager (CLI)")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
     set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
@@ -182,6 +200,9 @@ if(WIN32)
     set(CPACK_NSIS_DISPLAY_NAME "cdm Download Manager")
     set(CPACK_NSIS_PACKAGE_NAME "cdm Download Manager")
     set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+    set(CPACK_NSIS_MUI_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/cdm.ico")
+    set(CPACK_NSIS_MUI_UNIICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/cdm.ico")
+    set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\cdm-gui.exe")
     # Start Menu entries so the app is actually launchable after install
     # (otherwise only Uninstall.lnk shows up).
     set(CPACK_NSIS_MENU_LINKS

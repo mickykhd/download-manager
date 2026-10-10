@@ -26,16 +26,56 @@
 
 /* local IPC so browser-native-messaging hosts can feed URLs to the running app */
 #ifndef CDM_IPC_PORT
-#define CDM_IPC_PORT 8765
+#define CDM_IPC_PORT 15151
 #endif
 #if defined(__linux__) || defined(__unix__)
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <sys/select.h>
 #include <fcntl.h>
 #endif
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+/* Single-instance guard: returns 1 when another copy is already running
+ * (and brings its window forward on Windows), 0 when we own the lock. */
+static int cdm_already_running(void) {
+#ifdef _WIN32
+    HANDLE m = CreateMutexA(NULL, TRUE, "cdm-download-manager-single-instance");
+    if (!m) return 0; /* cannot tell: allow start */
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        HWND w = FindWindowA(NULL, "cdm - Download Manager");
+        if (w) {
+            ShowWindow(w, SW_RESTORE);
+            SetForegroundWindow(w);
+        }
+        CloseHandle(m);
+        return 1;
+    }
+    return 0; /* keep handle open for process lifetime (intentional leak) */
+#else
+    /* POSIX: advisory lock on a file; released automatically on exit. */
+    static int lockfd = -1;
+    char path[1024];
+    const char *home = getenv("HOME");
+    if (!home || !*home) home = "/tmp";
+    snprintf(path, sizeof(path), "%s/.cdm-gui.lock", home);
+    lockfd = open(path, O_RDWR | O_CREAT, 0600);
+    if (lockfd < 0) return 0;
+    struct flock fl;
+    memset(&fl, 0, sizeof(fl));
+    fl.l_type = F_WRLCK;
+    fl.l_whence = SEEK_SET;
+    if (fcntl(lockfd, F_SETLK, &fl) != 0) return 1; /* locked elsewhere */
+    (void)lockfd;
+    return 0;
+#endif
+}
 
 /* ---------------- globals ---------------- */
 static cdm_manager *g_mgr;
@@ -632,6 +672,7 @@ void cdm_gui_test_draw_top(struct nk_context *ctx, int w, int h) {
 
 #if !defined(CDM_UNIT_TEST)
 int main(int argc, char **argv) {
+    if (cdm_already_running()) return 0;
     if (cdm_global_init() != CDM_OK) { fprintf(stderr, "cdm: engine init failed\n"); return 1; }
     g_mgr = cdm_manager_create();
     cdm_manager_init_categories(g_mgr, g_base_dir);
