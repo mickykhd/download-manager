@@ -50,8 +50,13 @@ typedef struct {
 
     /* Proxy: 0 = direct (ignore env), 1 = system/env, 2 = manual. */
     int proxy_mode;
-    const char *proxy_url;     /* manual: [scheme://][user:pass@]host:port */
+    const char *proxy_url;     /* manual mode: [scheme://][user:pass@]host:port */
+    const char *proxy_user;    /* explicit credentials (either mode) */
+    const char *proxy_pass;
     int dup_mode;              /* existing output: 0 = auto-rename, 1 = overwrite */
+    int ignore_ssl;            /* 1 = skip TLS cert verification (insecure) */
+    int sparse;                /* 1 = sparse preallocation when supported */
+    int preserve_time;         /* 1 = set output mtime from Last-Modified */
 } cdm_config;
 
 /* Proxy modes for cdm_config.proxy_mode */

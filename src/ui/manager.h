@@ -99,10 +99,15 @@ typedef struct cdm_manager {
     /* connection policy */
     int proxy_mode;       /* CDM_PROXY_* */
     char proxy_url[512];  /* manual mode */
+    char proxy_user[256];
+    char proxy_pass[256];
     cdm_host_rule hosts[CDM_MAX_HOSTS];
     int n_hosts;
 
     int dup_mode;         /* 0 = auto-rename, 1 = overwrite existing */
+    int ignore_ssl;
+    int sparse;
+    int preserve_time;
 
     /* inbox for URLs fed by the integration server; the UI drains it */
     char pending_urls[CDM_MAX_PENDING_URLS][2048];
@@ -170,6 +175,8 @@ int cdm_manager_queue_window_open(const cdm_queue *q, time_t now);
 
 /* Connection policy. */
 void cdm_manager_set_proxy(cdm_manager *m, int mode, const char *url);
+void cdm_manager_set_proxy_auth(cdm_manager *m, const char *user,
+                                const char *pass);
 int cdm_manager_host_add(cdm_manager *m, const char *host);
 int cdm_manager_host_remove(cdm_manager *m, int idx);
 void cdm_manager_host_set(cdm_manager *m, int idx, int max_connections,
@@ -228,6 +235,11 @@ typedef struct {
     int tray_icon;   /* show system tray icon */
     int tray_minimize; /* minimize button hides to tray */
     int dup_mode;    /* 0 = auto-rename existing, 1 = overwrite */
+    int ignore_ssl;
+    int sparse;
+    int preserve_time;
+    char proxy_user[256];
+    char proxy_pass[256];
 } cdm_settings;
 
 void cdm_settings_default(cdm_settings *s);

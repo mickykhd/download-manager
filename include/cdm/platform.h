@@ -46,6 +46,8 @@ typedef struct cdm_file cdm_file;
 
 cdm_file *cdm_file_open_rw(const char *path);       /* create/open for read+write */
 int cdm_file_preallocate(cdm_file *f, int64_t size);/* reserve size, 0 on success */
+int cdm_file_set_sparse(cdm_file *f);   /* best-effort sparse flag, 0 ok */
+int cdm_file_set_mtime(cdm_file *f, int64_t unix_seconds); /* 0 ok */
 int64_t cdm_file_write_at(cdm_file *f, const void *buf, size_t len, int64_t off);
 int64_t cdm_file_size(cdm_file *f);
 void cdm_file_close(cdm_file *f);

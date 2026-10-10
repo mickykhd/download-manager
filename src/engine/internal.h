@@ -129,4 +129,8 @@ void cdm_emit_progress(struct cdm_download *d);
 /* integrity.c */
 cdm_status cdm_verify_sha256(const char *path, const char *expected_hex);
 
+/* download.c: parse an HTTP date ("Wed, 21 Oct 2015 07:28:00 GMT") to
+ * unix seconds, -1 when unparsable. */
+int64_t cdm_parse_http_date(const char *s);
+
 #endif /* CDM_INTERNAL_H */

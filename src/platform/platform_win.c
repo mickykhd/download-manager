@@ -3,6 +3,7 @@
 #include "cdm/platform.h"
 
 #include <windows.h>
+#include <winioctl.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -120,6 +121,26 @@ int64_t cdm_file_write_at(cdm_file *f, const void *buf, size_t len, int64_t off)
     }
     LeaveCriticalSection(&f->cs);
     return (int64_t)len;
+}
+
+int cdm_file_set_sparse(cdm_file *f) {
+    DWORD ret = 0;
+    if (!f) return -1;
+    if (!DeviceIoControl(f->h, FSCTL_SET_SPARSE, NULL, 0, NULL, 0,
+                         &ret, NULL))
+        return -1;
+    return 0;
+}
+
+int cdm_file_set_mtime(cdm_file *f, int64_t unix_seconds) {
+    FILETIME ft;
+    ULARGE_INTEGER t;
+    if (!f || unix_seconds < 0) return -1;
+    t.QuadPart = (ULONGLONG)unix_seconds * 10000000ULL + 116444736000000000ULL;
+    ft.dwLowDateTime = t.LowPart;
+    ft.dwHighDateTime = t.HighPart;
+    if (!SetFileTime(f->h, NULL, NULL, &ft)) return -1;
+    return 0;
 }
 
 int64_t cdm_file_size(cdm_file *f) {

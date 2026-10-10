@@ -133,6 +133,24 @@ int64_t cdm_file_write_at(cdm_file *f, const void *buf, size_t len, int64_t off)
     return (int64_t)len;
 }
 
+int cdm_file_set_sparse(cdm_file *f) {
+    /* POSIX preallocation via ftruncate is already sparse-friendly;
+     * filesystems that support it need no flag. */
+    (void)f;
+    return 0;
+}
+
+int cdm_file_set_mtime(cdm_file *f, int64_t unix_seconds) {
+    struct timespec ts[2];
+    if (!f || unix_seconds < 0) return -1;
+    ts[0].tv_sec = 0;
+    ts[0].tv_nsec = UTIME_OMIT;
+    ts[1].tv_sec = (time_t)unix_seconds;
+    ts[1].tv_nsec = 0;
+    if (futimens(f->fd, ts) != 0) return -1;
+    return 0;
+}
+
 int64_t cdm_file_size(cdm_file *f) {
     if (!f) return -1;
     struct stat st;

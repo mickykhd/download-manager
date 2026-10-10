@@ -152,8 +152,13 @@ cdm_manager *cdm_manager_create(void) {
     m->default_queue = 0;
     m->proxy_mode = CDM_PROXY_SYSTEM;
     m->proxy_url[0] = 0;
+    m->proxy_user[0] = 0;
+    m->proxy_pass[0] = 0;
     m->n_hosts = 0;
     m->dup_mode = 0;
+    m->ignore_ssl = 0;
+    m->sparse = 0;
+    m->preserve_time = 1;
     return m;
 }
 
@@ -390,6 +395,11 @@ void cdm_settings_default(cdm_settings *s) {
     s->tray_icon = 1;
     s->tray_minimize = 0;
     s->dup_mode = 0;
+    s->ignore_ssl = 0;
+    s->sparse = 0;
+    s->preserve_time = 1;
+    s->proxy_user[0] = 0;
+    s->proxy_pass[0] = 0;
 }
 
 static int clamp_int(int v, int lo, int hi) {
@@ -494,6 +504,28 @@ void cdm_settings_load(cdm_manager *m, cdm_settings *s) {
                     memcpy(s->api_key, v, n);
                     s->api_key[n] = 0;
                 }
+            } else if (strncmp(line, "proxy_user ", 11) == 0) {
+                char *v = line + 11;
+                while (*v == ' ' || *v == '\t') v++;
+                {
+                    size_t n = strlen(v);
+                    while (n > 0 && (v[n-1] == '\r' || v[n-1] == '\n' ||
+                                     v[n-1] == ' ' || v[n-1] == '\t')) n--;
+                    if (n >= sizeof(s->proxy_user)) n = sizeof(s->proxy_user) - 1;
+                    memcpy(s->proxy_user, v, n);
+                    s->proxy_user[n] = 0;
+                }
+            } else if (strncmp(line, "proxy_pass ", 11) == 0) {
+                char *v = line + 11;
+                while (*v == ' ' || *v == '\t') v++;
+                {
+                    size_t n = strlen(v);
+                    while (n > 0 && (v[n-1] == '\r' || v[n-1] == '\n' ||
+                                     v[n-1] == ' ' || v[n-1] == '\t')) n--;
+                    if (n >= sizeof(s->proxy_pass)) n = sizeof(s->proxy_pass) - 1;
+                    memcpy(s->proxy_pass, v, n);
+                    s->proxy_pass[n] = 0;
+                }
             } else if (m && strncmp(line, "proxy_url ", 10) == 0) {
                 char *v = line + 10;
                 while (*v == ' ' || *v == '\t') v++;
@@ -537,6 +569,12 @@ void cdm_settings_load(cdm_manager *m, cdm_settings *s) {
             s->tray_minimize = val ? 1 : 0;
         else if (strcmp(key, "dup_mode") == 0)
             s->dup_mode = (val == 1) ? 1 : 0;
+        else if (strcmp(key, "ignore_ssl") == 0)
+            s->ignore_ssl = val ? 1 : 0;
+        else if (strcmp(key, "sparse") == 0)
+            s->sparse = val ? 1 : 0;
+        else if (strcmp(key, "preserve_time") == 0)
+            s->preserve_time = val ? 1 : 0;
         /* unknown keys ignored for forward compatibility */
     }
     fclose(f);
@@ -545,6 +583,11 @@ void cdm_settings_load(cdm_manager *m, cdm_settings *s) {
         if (m->default_queue < 0 || m->default_queue >= m->n_queues)
             m->default_queue = 0;
         m->dup_mode = s->dup_mode;
+        m->ignore_ssl = s->ignore_ssl;
+        m->sparse = s->sparse;
+        m->preserve_time = s->preserve_time;
+        snprintf(m->proxy_user, sizeof(m->proxy_user), "%s", s->proxy_user);
+        snprintf(m->proxy_pass, sizeof(m->proxy_pass), "%s", s->proxy_pass);
         cdm_manager_set_max_active(m, s->max_active);
     }
 }
@@ -582,6 +625,13 @@ int cdm_settings_save(const cdm_manager *m, const cdm_settings *s) {
     fprintf(f, "tray_icon %d\n", s->tray_icon ? 1 : 0);
     fprintf(f, "tray_minimize %d\n", s->tray_minimize ? 1 : 0);
     fprintf(f, "dup_mode %d\n", s->dup_mode ? 1 : 0);
+    fprintf(f, "ignore_ssl %d\n", s->ignore_ssl ? 1 : 0);
+    fprintf(f, "sparse %d\n", s->sparse ? 1 : 0);
+    fprintf(f, "preserve_time %d\n", s->preserve_time ? 1 : 0);
+    if (s->proxy_user[0])
+        fprintf(f, "proxy_user %s\n", s->proxy_user);
+    if (s->proxy_pass[0])
+        fprintf(f, "proxy_pass %s\n", s->proxy_pass);
     if (s->api_key[0])
         fprintf(f, "api_key %s\n", s->api_key);
     if (m) {
@@ -822,6 +872,10 @@ static void job_apply_policy(cdm_manager *m, cdm_job *j) {
     if (j->cfg.proxy_mode == CDM_PROXY_SYSTEM && !j->cfg.proxy_url) {
         j->cfg.proxy_mode = m->proxy_mode;
         j->cfg.proxy_url = m->proxy_url[0] ? m->proxy_url : NULL;
+        if (!j->cfg.proxy_user && m->proxy_user[0])
+            j->cfg.proxy_user = m->proxy_user;
+        if (!j->cfg.proxy_pass && m->proxy_pass[0])
+            j->cfg.proxy_pass = m->proxy_pass;
     }
     r = cdm_manager_host_for_url(m, j->url);
     if (r) {
@@ -918,6 +972,9 @@ static int add_internal(cdm_manager *m, const char *url, const char *outpath,
     j->cfg.output_path = j->outpath[0] ? j->outpath : NULL;
     j->cfg.quiet = 1;
     j->cfg.dup_mode = m->dup_mode;
+    j->cfg.ignore_ssl = m->ignore_ssl;
+    j->cfg.sparse = m->sparse;
+    j->cfg.preserve_time = m->preserve_time;
     job_apply_net(j, cfg);
     job_apply_policy(m, j);
 
@@ -1157,6 +1214,16 @@ void cdm_manager_set_proxy(cdm_manager *m, int mode, const char *url) {
         m->proxy_mode = mode;
     if (url)
         snprintf(m->proxy_url, sizeof(m->proxy_url), "%s", url);
+    cdm_mutex_unlock(m->mtx);
+}
+
+void cdm_manager_set_proxy_auth(cdm_manager *m, const char *user,
+                                const char *pass) {
+    cdm_mutex_lock(m->mtx);
+    if (user)
+        snprintf(m->proxy_user, sizeof(m->proxy_user), "%s", user);
+    if (pass)
+        snprintf(m->proxy_pass, sizeof(m->proxy_pass), "%s", pass);
     cdm_mutex_unlock(m->mtx);
 }
 

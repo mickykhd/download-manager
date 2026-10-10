@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 
 /* Assign a pending chunk to an idle transfer and add it to the multi stack.
  * Returns 1 if a chunk was started, 0 if none remain. Caller holds no lock. */
@@ -27,6 +28,74 @@ static void requeue_chunk(cdm_download *d, cdm_transfer *t) {
     cdm_mutex_unlock(d->lock);
 }
 
+/* Straggler mitigation: when idle capacity exists but nothing is pending,
+ * halve the largest in-flight remainder back to PENDING so free transfers
+ * can pick it up. Aborting the straggler is safe: fetched bytes stay valid
+ * and the fresh ranges continue exactly where each half left off.
+ * Single-threaded (same thread drives multi_perform), so no races. */
+#define CDM_SPLIT_MIN_REMAINDER (2 * 1024 * 1024)
+#define CDM_SPLIT_MAX_CHUNKS 4096
+
+static int steal_remainder(cdm_download *d) {
+    int bi = -1;
+    int64_t best = 0;
+    cdm_chunk *v;
+    int64_t rem, half;
+    cdm_chunk *grown;
+    int i;
+    for (i = 0; i < d->transfer_cap; i++) {
+        cdm_transfer *t = &d->transfers[i];
+        if (!t->in_multi || !t->chunk) continue;
+        if (t->chunk->length - t->chunk->done > best) {
+            best = t->chunk->length - t->chunk->done;
+            bi = i;
+        }
+    }
+    if (bi < 0 || best < CDM_SPLIT_MIN_REMAINDER) return 0;
+    if (d->chunk_count >= CDM_SPLIT_MAX_CHUNKS) return 0;
+    if (!d->chunks) return 0;
+
+    /* victim index before any reallocation */
+    {
+        ptrdiff_t vi = d->transfers[bi].chunk - d->chunks;
+        if (vi < 0 || vi >= d->chunk_count) return 0;
+        /* abort the straggler's request; its fetched prefix stays valid */
+        curl_multi_remove_handle(d->multi, d->transfers[bi].easy);
+        d->transfers[bi].in_multi = 0;
+        d->active_transfers--;
+        d->transfers[bi].chunk = NULL;
+
+        /* grow the chunk table (transfers hold pointers: rebase by index) */
+        grown = (cdm_chunk *)realloc(d->chunks,
+                                     (size_t)(d->chunk_count + 1) * sizeof(cdm_chunk));
+        if (!grown) return 0;
+        {
+            cdm_chunk *old = d->chunks;
+            for (i = 0; i < d->transfer_cap; i++) {
+                cdm_transfer *t = &d->transfers[i];
+                if (t->chunk)
+                    t->chunk = grown + (t->chunk - old);
+            }
+            d->chunks = grown;
+        }
+        v = &d->chunks[vi];
+    }
+    rem = v->length - v->done;
+    if (rem < CDM_SPLIT_MIN_REMAINDER) return 0;
+    half = rem / 2;
+    {
+        cdm_chunk *second = &d->chunks[d->chunk_count];
+        second->offset = v->offset + v->done + half;
+        second->length = v->length - v->done - half;
+        second->done = 0;
+        second->state = CHUNK_PENDING;
+        v->length = v->done + half;
+        v->state = CHUNK_PENDING;
+        d->chunk_count++;
+    }
+    return 1;
+}
+
 /* Adaptive concurrency: periodically add a connection while throughput keeps
  * improving; the whole loop already backs off on failures via retries. */
 static void adapt(cdm_download *d) {
@@ -50,6 +119,22 @@ static void adapt(cdm_download *d) {
     d->adapt_last_time = now;
     d->adapt_last_bytes = d->downloaded;
     d->adapt_last_speed = speed;
+
+    /* idle capacity with nothing pending: split the slowest straggler so
+     * free transfers have work ( placement below picks the halves up ) */
+    if (!d->single_stream && d->active_transfers < d->target_conn) {
+        int pending = 0;
+        int i;
+        cdm_mutex_lock(d->lock);
+        for (i = 0; i < d->chunk_count; i++) {
+            if (d->chunks[i].state == CHUNK_PENDING) {
+                pending = 1;
+                break;
+            }
+        }
+        cdm_mutex_unlock(d->lock);
+        if (!pending) steal_remainder(d);
+    }
 }
 
 cdm_status cdm_run_transfers(cdm_download *d) {

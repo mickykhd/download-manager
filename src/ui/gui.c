@@ -137,6 +137,8 @@ static char g_api_port[16] = {0}; static int g_api_port_len = 0;
 static char g_api_key[128] = {0}; static int g_api_key_len = 0;
 static int g_net_proxy = CDM_PROXY_SYSTEM;
 static char g_net_proxy_url[512] = {0}; static int g_net_proxy_url_len = 0;
+static char g_net_proxy_user[256] = {0}; static int g_net_proxy_user_len = 0;
+static char g_net_proxy_pass[256] = {0}; static int g_net_proxy_pass_len = 0;
 static char g_newhost[256] = {0}; static int g_newhost_len = 0;
 static int  g_qedit_idx = 0;
 static char g_qedit_start[16] = {0}; static int g_qedit_start_len = 0;
@@ -435,6 +437,10 @@ static void draw_toolbar(struct nk_context *ctx) {
         g_net_proxy = g_mgr->proxy_mode;
         snprintf(g_net_proxy_url, sizeof(g_net_proxy_url), "%s", g_mgr->proxy_url);
         g_net_proxy_url_len = (int)strlen(g_net_proxy_url);
+        snprintf(g_net_proxy_user, sizeof(g_net_proxy_user), "%s", g_mgr->proxy_user);
+        g_net_proxy_user_len = (int)strlen(g_net_proxy_user);
+        snprintf(g_net_proxy_pass, sizeof(g_net_proxy_pass), "%s", g_mgr->proxy_pass);
+        g_net_proxy_pass_len = (int)strlen(g_net_proxy_pass);
         g_show_net = 1;
     }
     nk_layout_row_push(ctx, 0.26f);
@@ -489,15 +495,35 @@ static void draw_net_modal(struct nk_context *ctx, int win_w, int win_h) {
         nk_edit_string(ctx, NK_EDIT_FIELD, g_net_proxy_url, &g_net_proxy_url_len,
                        sizeof(g_net_proxy_url)-1, nk_filter_default);
         nk_layout_row_end(ctx);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 2);
+        nk_layout_row_push(ctx, 0.5f);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_net_proxy_user, &g_net_proxy_user_len,
+                       sizeof(g_net_proxy_user)-1, nk_filter_default);
+        nk_layout_row_push(ctx, 0.5f);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_net_proxy_pass, &g_net_proxy_pass_len,
+                       sizeof(g_net_proxy_pass)-1, nk_filter_default);
+        nk_layout_row_end(ctx);
         nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
         nk_layout_row_push(ctx, 0.5f);
-        nk_label(ctx, "Manual: host:port or full URL", NK_TEXT_LEFT);
+        nk_label(ctx, "Manual: host:port or URL; user/pass optional", NK_TEXT_LEFT);
         nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "Apply proxy")) {
             cdm_manager_set_proxy(g_mgr, g_net_proxy,
                                   g_net_proxy_url_len ? g_net_proxy_url : "");
+            cdm_manager_set_proxy_auth(g_mgr, g_net_proxy_user, g_net_proxy_pass);
             persist_settings();
         }
+        nk_layout_row_end(ctx);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 24, 3);
+        nk_layout_row_push(ctx, 0.34f);
+        { int sp = g_mgr->sparse; nk_checkbox_label(ctx, "Sparse files", &sp);
+          if (!!sp != !!g_mgr->sparse) { g_mgr->sparse = sp; persist_settings(); } }
+        nk_layout_row_push(ctx, 0.33f);
+        { int pt = g_mgr->preserve_time; nk_checkbox_label(ctx, "Keep file time", &pt);
+          if (!!pt != !!g_mgr->preserve_time) { g_mgr->preserve_time = pt; persist_settings(); } }
+        nk_layout_row_push(ctx, 0.33f);
+        { int is = g_mgr->ignore_ssl; nk_checkbox_label(ctx, "Ignore TLS errors", &is);
+          if (!!is != !!g_mgr->ignore_ssl) { g_mgr->ignore_ssl = is; persist_settings(); } }
         nk_layout_row_end(ctx);
 
         nk_layout_row_dynamic(ctx, 22, 1);
@@ -919,6 +945,11 @@ static void persist_settings(void) {
     st.tray_icon = g_tray_icon;
     st.tray_minimize = g_tray_minimize;
     st.dup_mode = g_mgr->dup_mode;
+    st.ignore_ssl = g_mgr->ignore_ssl;
+    st.sparse = g_mgr->sparse;
+    st.preserve_time = g_mgr->preserve_time;
+    snprintf(st.proxy_user, sizeof(st.proxy_user), "%s", g_mgr->proxy_user);
+    snprintf(st.proxy_pass, sizeof(st.proxy_pass), "%s", g_mgr->proxy_pass);
     cdm_settings_save(g_mgr, &st);
 }
 

@@ -3,6 +3,7 @@
  * proxy settings (+ persistence) and per-job application. Network-free.
  */
 #include "manager.h"
+#include "internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -120,8 +121,18 @@ int main(void) {
         cdm_settings s;
         cdm_settings_default(&s);
         cdm_manager_set_proxy(m, CDM_PROXY_MANUAL, "http://127.0.0.1:8080");
+        cdm_manager_set_proxy_auth(m, "bob", "s3cret");
         cdm_manager_host_add(m, "example.com");
         cdm_manager_host_set(m, 0, 2, 512, "PersistAgent");
+        m->ignore_ssl = 1;
+        m->sparse = 1;
+        m->preserve_time = 0;
+        /* persist_settings() copies live manager state into settings */
+        snprintf(s.proxy_user, sizeof(s.proxy_user), "%s", m->proxy_user);
+        snprintf(s.proxy_pass, sizeof(s.proxy_pass), "%s", m->proxy_pass);
+        s.ignore_ssl = m->ignore_ssl;
+        s.sparse = m->sparse;
+        s.preserve_time = m->preserve_time;
         CHECK(cdm_settings_save(m, &s) == 0, "save with net policy succeeds");
         cdm_manager *m2 = cdm_manager_create();
         cdm_settings s2;
@@ -129,12 +140,27 @@ int main(void) {
         CHECK(m2->proxy_mode == CDM_PROXY_MANUAL, "proxy mode restored");
         CHECK(strcmp(m2->proxy_url, "http://127.0.0.1:8080") == 0,
               "proxy URL restored");
+        CHECK(strcmp(s2.proxy_user, "bob") == 0 &&
+              strcmp(s2.proxy_pass, "s3cret") == 0,
+              "proxy credentials restored");
         CHECK(m2->n_hosts == 1 &&
               strcmp(m2->hosts[0].host, "example.com") == 0,
               "host rule restored");
         CHECK(m2->hosts[0].max_speed_bps == 512, "host speed restored");
+        CHECK(m2->ignore_ssl == 1 && m2->sparse == 1 && m2->preserve_time == 0,
+              "engine flags restored");
         cdm_manager_destroy(m);
         cdm_manager_destroy(m2);
+    }
+
+    /* HTTP date parsing */
+    {
+        CHECK(cdm_parse_http_date("Wed, 21 Oct 2015 07:28:00 GMT") == 1445412480LL,
+              "IMF-fixdate parses");
+        CHECK(cdm_parse_http_date("21-Oct-2015 07:28:00") == 1445412480LL,
+              "dash variant parses");
+        CHECK(cdm_parse_http_date("garbage") < 0, "garbage rejected");
+        CHECK(cdm_parse_http_date(NULL) < 0, "NULL rejected");
     }
 
     if (failures) { fprintf(stderr, "%d test(s) failed\n", failures); return 1; }

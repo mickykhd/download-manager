@@ -27,6 +27,15 @@ void cdm_apply_conn_opts(CURL *c, const cdm_config *cfg,
         }
     }
 
+    if (cfg->ignore_ssl) {
+        curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
+    if (cfg->proxy_user && *cfg->proxy_user)
+        curl_easy_setopt(c, CURLOPT_PROXYUSERNAME, cfg->proxy_user);
+    if (cfg->proxy_pass)
+        curl_easy_setopt(c, CURLOPT_PROXYPASSWORD, cfg->proxy_pass);
+
     switch (cfg->proxy_mode) {
     case CDM_PROXY_MANUAL:
         if (cfg->proxy_url && *cfg->proxy_url)

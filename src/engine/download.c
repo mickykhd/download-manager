@@ -66,6 +66,9 @@ void cdm_config_default(cdm_config *cfg) {
     cfg->adaptive = 1;
     cfg->proxy_mode = CDM_PROXY_SYSTEM; /* respect env/system proxy */
     cfg->dup_mode = 0;
+    cfg->ignore_ssl = 0;
+    cfg->sparse = 0;
+    cfg->preserve_time = 1;
 }
 
 cdm_status cdm_global_init(void) {
@@ -246,7 +249,9 @@ cdm_status cdm_download_run(cdm_download *d) {
     d->file = cdm_file_open_rw(d->part_path);
     if (!d->file) return CDM_ERR_IO;
 
-    if (d->total_bytes > 0) {
+    if (d->cfg.sparse) {
+        cdm_file_set_sparse(d->file); /* best effort; writes extend sparsely */
+    } else if (d->total_bytes > 0) {
         if (cdm_file_preallocate(d->file, d->total_bytes) != 0) {
             /* non-fatal: some filesystems disallow; writes still extend */
         }
@@ -256,6 +261,12 @@ cdm_status cdm_download_run(cdm_download *d) {
     if (st != CDM_OK) { cdm_file_close(d->file); d->file = NULL; return st; }
 
     st = cdm_run_transfers(d);
+
+    /* stamp server time before closing (rename preserves it) */
+    if (st == CDM_OK && d->cfg.preserve_time && d->probe.last_modified[0]) {
+        int64_t mtime = cdm_parse_http_date(d->probe.last_modified);
+        if (mtime >= 0) cdm_file_set_mtime(d->file, mtime);
+    }
 
     cdm_file_close(d->file);
     d->file = NULL;
@@ -284,6 +295,52 @@ cdm_status cdm_download_run(cdm_download *d) {
     if (cdm_rename(d->part_path, d->output_path) != 0) return CDM_ERR_IO;
     cdm_meta_delete(d);
     return CDM_OK;
+}
+
+int64_t cdm_parse_http_date(const char *s) {
+    static const char *mon[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    int day, year, hh, mm, ss, mi, i;
+    int64_t days;
+    char mstr[4];
+    /* IMF-fixdate: "Wed, 21 Oct 2015 07:28:00 GMT" (also accept without
+     * weekday or with '-' separators via %d-%3s-%d tolerant scan) */
+    if (!s) return -1;
+    while (*s == ' ' || *s == '\t') s++;
+    if (sscanf(s, "%*3s , %d %3s %d %d : %d : %d", &day, mstr, &year,
+               &hh, &mm, &ss) != 6) {
+        if (sscanf(s, "%d-%3s-%d %d:%d:%d", &day, mstr, &year,
+                   &hh, &mm, &ss) != 6)
+            return -1;
+    }
+    mstr[3] = 0;
+    for (i = 0; i < 12; i++) {
+        int match = 1;
+        for (int k = 0; k < 3; k++) {
+            /* table is mixed-case ("Oct"): fold BOTH sides */
+            char a = mstr[k], b = mon[i][k];
+            if (a >= 'a' && a <= 'z') a -= (char)('a' - 'A');
+            if (b >= 'a' && b <= 'z') b -= (char)('a' - 'A');
+            if (a != b) { match = 0; break; }
+        }
+        if (match) break;
+    }
+    if (i >= 12) return -1;
+    mi = i; /* 0-based month */
+    if (day < 1 || day > 31 || year < 1970 || year > 2100 ||
+        hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 60)
+        return -1;
+    /* days since epoch (civil date algorithm) */
+    {
+        int64_t y = year, m = mi + 1, d = day;
+        if (m <= 2) {
+            y--;
+            m += 12;
+        }
+        days = 365 * y + y / 4 - y / 100 + y / 400 +
+               (153 * (m - 3) + 2) / 5 + d - 719469;
+    }
+    return days * 86400LL + hh * 3600LL + mm * 60LL + ss;
 }
 
 void cdm_download_destroy(cdm_download *d) {
