@@ -71,7 +71,8 @@ int main(void) {
     /* scan BEFORE nk_end (text commands are torn down at end-of-frame) */
 
     const char *btns[] = {"Add URL","Start/Resume","Stop","Stop All",
-                          "Delete","Delete Compl.","Options","Scheduler", NULL};
+                           "Delete","Delete Compl.","Options","Scheduler",
+                           "Add Batch","Queues","Edit", NULL};
     int fail = 0;
     printf("Toolbar button widths:\n");
     for (int i = 0; btns[i]; i++) {

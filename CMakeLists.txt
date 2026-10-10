@@ -180,6 +180,11 @@ target_include_directories(test_settings PRIVATE include src/engine src/ui)
 target_link_libraries(test_settings PRIVATE cdmcore)
 add_test(NAME test_settings COMMAND test_settings)
 
+add_executable(test_queue tests/test_queue.c src/ui/manager.c)
+target_include_directories(test_queue PRIVATE include src/engine src/ui)
+target_link_libraries(test_queue PRIVATE cdmcore)
+add_test(NAME test_queue COMMAND test_queue)
+
 install(TARGETS cdm RUNTIME DESTINATION bin)
 
 # --- Packaging (Windows installer via CPack: ZIP always, NSIS when available) ---

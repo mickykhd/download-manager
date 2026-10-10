@@ -81,7 +81,7 @@ int main(void) {
         cdm_settings s;
         cdm_settings_default(&s);
         s.max_active = 7; s.theme = 1; s.skin = 2;
-        CHECK(cdm_settings_save(&s) == 0, "save succeeds");
+        CHECK(cdm_settings_save(m, &s) == 0, "save succeeds");
 
         char path[300];
         snprintf(path, sizeof(path), "%s/cdm/settings.conf", tmp);

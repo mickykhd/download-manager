@@ -91,10 +91,36 @@ static char g_out[2048] = {0}; static int g_out_len = 0;
 static int  g_cat_idx = 0;
 static char g_speed[32] = {0}; static int g_speed_len = 0;
 static char g_sched[32] = {0}; static int g_sched_len = 0;
-static int  g_add_queued = 0;
+static int  g_add_queue = -1; /* -1 = download now, else queue index */
 
 static int g_show_props = 0;
 static char g_props_speed[32] = {0}; static int g_props_speed_len = 0;
+
+static int g_show_edit = 0;
+static int g_edit_id = -1;
+static char g_edit_url[2048] = {0}; static int g_edit_url_len = 0;
+static char g_edit_out[2048] = {0}; static int g_edit_out_len = 0;
+static char g_edit_speed[32] = {0}; static int g_edit_speed_len = 0;
+static int  g_edit_queue = -1;
+
+static int g_show_batch = 0;
+static char g_batch[8192] = {0}; static int g_batch_len = 0;
+static int  g_batch_queue = 0;
+
+static int g_show_queues = 0;
+static char g_newq_name[64] = {0}; static int g_newq_name_len = 0;
+static int  g_qedit_idx = 0;
+static char g_qedit_start[16] = {0}; static int g_qedit_start_len = 0;
+static char g_qedit_end[16] = {0}; static int g_qedit_end_len = 0;
+
+/* "HH:MM" -> minutes since midnight; empty/invalid -> -1 (no bound). */
+static int parse_hhmm_min(const char *s) {
+    int hh, mm;
+    if (!s || !*s) return -1;
+    if (sscanf(s, "%d:%d", &hh, &mm) != 2) return -1;
+    if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return -1;
+    return hh * 60 + mm;
+}
 
 static int g_show_opts = 0;
 static int g_show_sched = 0;
@@ -105,6 +131,8 @@ static int g_theme = 0;   /* 0 dark, 1 light */
 static int g_skin = 0;    /* 0 blue,1 teal,2 red,3 purple */
 
 static int g_cat_filter = -1; /* -1 = all */
+
+static void open_edit(cdm_job *j); /* defined after draw_toolbar */
 
 /* local IPC (browser native-messaging -> running app) */
 static int g_ipc_sock = -1;
@@ -321,6 +349,33 @@ static void draw_toolbar(struct nk_context *ctx) {
     nk_layout_row_push(ctx, 0.12f);
     if (nk_button_label(ctx, "Scheduler")) g_show_sched = 1;
     nk_layout_row_end(ctx);
+
+    nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 3);
+    nk_layout_row_push(ctx, 0.33f);
+    if (nk_button_label(ctx, "Add Batch")) g_show_batch = 1;
+    nk_layout_row_push(ctx, 0.33f);
+    if (nk_button_label(ctx, "Queues")) g_show_queues = 1;
+    nk_layout_row_push(ctx, 0.34f);
+    if (nk_button_label(ctx, "Edit") && j && !j->running) open_edit(j);
+    nk_layout_row_end(ctx);
+}
+
+static void open_edit(cdm_job *j) {
+    static int edit_id = -1;
+    if (!j) return;
+    cdm_mutex_lock(j->mtx);
+    snprintf(g_edit_url, sizeof(g_edit_url), "%s", j->url);
+    snprintf(g_edit_out, sizeof(g_edit_out), "%s", j->outpath);
+    snprintf(g_edit_speed, sizeof(g_edit_speed), "%lld",
+             (long long)j->cfg.max_speed_bps);
+    g_edit_queue = j->queue_idx;
+    edit_id = j->id;
+    cdm_mutex_unlock(j->mtx);
+    g_edit_url_len = (int)strlen(g_edit_url);
+    g_edit_out_len = (int)strlen(g_edit_out);
+    g_edit_speed_len = (int)strlen(g_edit_speed);
+    g_edit_id = edit_id;
+    g_show_edit = 1;
 }
 
 /* ---------------- category tree ---------------- */
@@ -372,7 +427,7 @@ static void draw_list(struct nk_context *ctx, int *active, double *total_speed) 
             cdm_mutex_lock(job->mtx);
             p = job->prog;
             int st = job->state;
-            int queued = job->queued;
+            int qidx = job->queue_idx;
             int sched = (job->sched_epoch > 0);
             cdm_mutex_unlock(job->mtx);
 
@@ -406,7 +461,10 @@ static void draw_list(struct nk_context *ctx, int *active, double *total_speed) 
             nk_layout_row_push(ctx, w[7]);
             { char x[8]; snprintf(x,sizeof x,"%d",p.active_connections); nk_label(ctx,x,NK_TEXT_LEFT); }
             nk_layout_row_push(ctx, w[8]);
-            { char q[4]; snprintf(q,sizeof q,"%s", queued?"Q":(sched?"S":"-")); nk_label(ctx,q,NK_TEXT_LEFT); }
+            { char q[8];
+              if (qidx >= 0) snprintf(q, sizeof q, "Q%d", qidx);
+              else snprintf(q, sizeof q, "%s", sched ? "S" : "-");
+              nk_label(ctx, q, NK_TEXT_LEFT); }
             nk_layout_row_end(ctx);
         }
         cdm_mutex_unlock(g_mgr->mtx);
@@ -420,7 +478,7 @@ static void draw_body(struct nk_context *ctx, float h) {
     int active = 0;
     double total_speed = 0;
 
-    nk_layout_row_begin(ctx, NK_DYNAMIC, h - 142.0f, 2);
+    nk_layout_row_begin(ctx, NK_DYNAMIC, h - 172.0f, 2);
     nk_layout_row_push(ctx, 0.18f);
     draw_categories(ctx);
     nk_layout_row_push(ctx, 0.82f);
@@ -452,14 +510,40 @@ static void submit_add(void) {
         snprintf(outpath,sizeof outpath,"%s/%.1174s", g_mgr->cats[g_cat_idx].dir, bn);
     }
     cdm_config cfg = g_cfg; cfg.max_speed_bps = sp;
-    int id = cdm_manager_add_ex(g_mgr, g_url, outpath, &cfg, g_add_queued, ep);
+    int id;
+    if (g_add_queue >= 0)
+        id = cdm_manager_add_to_queue_idx(g_mgr, g_url, outpath, &cfg, g_add_queue, ep);
+    else
+        id = cdm_manager_add_ex(g_mgr, g_url, outpath, &cfg, 0, ep);
     if (id >= 0) {
         cdm_job *jj = cdm_manager_find(g_mgr, id);
         if (jj) jj->cat_idx = g_cat_idx;
     }
     g_url[0]=0; g_url_len=0; g_out[0]=0; g_out_len=0;
     g_speed[0]=0; g_speed_len=0; g_sched[0]=0; g_sched_len=0;
-    g_add_queued=0; g_show_add=0;
+    g_add_queue=-1; g_show_add=0;
+}
+
+/* Queue combo items: [0] = action label, [1..n] = queue names. */
+static int queue_combo(struct nk_context *ctx, int *sel, const char *now_label) {
+    char items[CDM_MAX_QUEUES + 1][80];
+    const char *ptrs[CDM_MAX_QUEUES + 1];
+    int n = 0;
+    snprintf(items[0], sizeof(items[0]), "%s", now_label);
+    ptrs[0] = items[0];
+    n = 1;
+    for (int i = 0; i < g_mgr->n_queues && n < CDM_MAX_QUEUES + 1; i++) {
+        snprintf(items[n], sizeof(items[n]), "Queue: %.70s", g_mgr->queues[i].name);
+        ptrs[n] = items[n];
+        n++;
+    }
+    /* sel: -1 = now/action, else queue index = sel - 1 */
+    int cur = *sel + 1;
+    if (cur < 0) cur = 0;
+    if (cur >= n) cur = n - 1;
+    int s = nk_combo(ctx, ptrs, n, cur, 20, nk_vec2(220, 200));
+    *sel = s - 1;
+    return *sel;
 }
 
 static void draw_add_modal(struct nk_context *ctx, int win_w, int win_h) {
@@ -494,18 +578,222 @@ static void draw_add_modal(struct nk_context *ctx, int win_w, int win_h) {
         nk_edit_string(ctx, NK_EDIT_FIELD, g_sched, &g_sched_len, sizeof(g_sched)-1, nk_filter_default);
         nk_layout_row_end(ctx);
 
-        nk_layout_row_begin(ctx, NK_DYNAMIC, 24, 2);
-        nk_layout_row_push(ctx, 0.7f);
-        nk_checkbox_label(ctx, "Add to queue", &g_add_queued);
-        nk_layout_row_push(ctx, 0.3f);
-        if (nk_button_label(ctx, "Download")) submit_add();
-        nk_layout_row_push(ctx, 0.0f); /* keep row balanced */
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 2);
+        nk_layout_row_push(ctx, 0.5f); nk_label(ctx, "Start:", NK_TEXT_LEFT);
+        nk_layout_row_push(ctx, 0.5f);
+        queue_combo(ctx, &g_add_queue, "Download now");
         nk_layout_row_end(ctx);
+
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
+        nk_layout_row_push(ctx, 0.5f);
+        if (nk_button_label(ctx, "Download")) submit_add();
+        nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "Cancel")) {
             g_url[0]=0; g_url_len=0; g_out[0]=0; g_out_len=0;
             g_speed[0]=0; g_speed_len=0; g_sched[0]=0; g_sched_len=0;
-            g_show_add=0;
+            g_add_queue=-1; g_show_add=0;
         }
+        nk_layout_row_end(ctx);
+    }
+    nk_end(ctx);
+}
+
+static void submit_batch(void) {
+    /* split textarea into lines, expand {a:b} ranges, enqueue */
+    char *lines[512];
+    int n = 0;
+    char copy[8192];
+    snprintf(copy, sizeof(copy), "%s", g_batch);
+    for (char *p = copy; *p && n < 512;) {
+        while (*p == '\r' || *p == '\n' || *p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        lines[n++] = p;
+        while (*p && *p != '\r' && *p != '\n') p++;
+        if (*p) *p++ = 0;
+        /* rtrim */
+        char *e = lines[n-1] + strlen(lines[n-1]);
+        while (e > lines[n-1] && (e[-1] == ' ' || e[-1] == '\t')) *--e = 0;
+        if (!lines[n-1][0]) n--;
+    }
+    {
+        static char expanded[512][2048];
+        const char *urls[512];
+        int total = 0;
+        cdm_config cfg = g_cfg;
+        cfg.quiet = 1;
+        for (int i = 0; i < n && total < 512; i++) {
+            int got = cdm_expand_range(lines[i], &expanded[total], 512 - total);
+            for (int k = 0; k < got && total < 512; k++) {
+                urls[total] = expanded[total];
+                total++;
+            }
+        }
+        if (total > 0)
+            cdm_manager_add_batch(g_mgr, urls, total, &cfg, g_batch_queue);
+    }
+    g_batch[0]=0; g_batch_len=0; g_show_batch=0;
+}
+
+static void draw_batch_modal(struct nk_context *ctx, int win_w, int win_h) {
+    struct nk_rect r = nk_rect(win_w/2 - 280, win_h/2 - 200, 560, 400);
+    if (nk_begin(ctx, "Add Batch", r,
+                 NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_MOVABLE)) {
+        nk_layout_row_dynamic(ctx, 22, 1);
+        nk_label(ctx, "One URL per line. Use {start:end} for ranges:", NK_TEXT_LEFT);
+        nk_layout_row_dynamic(ctx, 240, 1);
+        nk_edit_string(ctx, NK_EDIT_BOX, g_batch, &g_batch_len,
+                       sizeof(g_batch)-1, nk_filter_default);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 2);
+        nk_layout_row_push(ctx, 0.5f); nk_label(ctx, "Start:", NK_TEXT_LEFT);
+        nk_layout_row_push(ctx, 0.5f);
+        queue_combo(ctx, &g_batch_queue, "Download now");
+        nk_layout_row_end(ctx);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
+        nk_layout_row_push(ctx, 0.5f);
+        if (nk_button_label(ctx, "Add all")) submit_batch();
+        nk_layout_row_push(ctx, 0.5f);
+        if (nk_button_label(ctx, "Cancel")) {
+            g_batch[0]=0; g_batch_len=0; g_show_batch=0;
+        }
+        nk_layout_row_end(ctx);
+    }
+    nk_end(ctx);
+}
+
+static void persist_settings(void) {
+    cdm_settings st;
+    st.max_active = g_mgr->max_active;
+    st.theme = g_theme;
+    st.skin = g_skin;
+    cdm_settings_save(g_mgr, &st);
+}
+
+static void draw_queues_modal(struct nk_context *ctx, int win_w, int win_h) {
+    struct nk_rect r = nk_rect(win_w/2 - 300, win_h/2 - 220, 600, 440);
+    if (nk_begin(ctx, "Queues", r,
+                 NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_MOVABLE)) {
+        nk_layout_row_dynamic(ctx, 22, 1);
+        nk_label(ctx, "Name | Max (global=-1) | Window HH:MM-HH:MM | On | Del", NK_TEXT_LEFT);
+        for (int i = 0; i < g_mgr->n_queues; i++) {
+            cdm_queue *q = &g_mgr->queues[i];
+            char ws[16], we[16];
+            if (q->sched_start_min < 0) snprintf(ws, sizeof ws, "--:--");
+            else snprintf(ws, sizeof ws, "%02d:%02d", q->sched_start_min / 60, q->sched_start_min % 60);
+            if (q->sched_end_min < 0) snprintf(we, sizeof we, "--:--");
+            else snprintf(we, sizeof we, "%02d:%02d", q->sched_end_min / 60, q->sched_end_min % 60);
+            nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 5);
+            nk_layout_row_push(ctx, 0.30f); nk_label(ctx, q->name, NK_TEXT_LEFT);
+            nk_layout_row_push(ctx, 0.22f);
+            { int mx = q->max_active;
+              nk_property_int(ctx, "#", -1, &mx, 16, 1, 1);
+              if (mx != q->max_active) {
+                  cdm_manager_queue_set(g_mgr, i, NULL, mx, q->sched_start_min,
+                                        q->sched_end_min, q->enabled);
+                  persist_settings();
+              } }
+            nk_layout_row_push(ctx, 0.26f);
+            { char win[16]; snprintf(win, sizeof win, "%s-%s", ws, we);
+              nk_label(ctx, win, NK_TEXT_LEFT); }
+            nk_layout_row_push(ctx, 0.10f);
+            { int en = q->enabled;
+              if (nk_checkbox_label(ctx, "", &en)) {
+                  cdm_manager_queue_set(g_mgr, i, NULL, q->max_active,
+                                        q->sched_start_min, q->sched_end_min, en);
+                  persist_settings();
+              } }
+            nk_layout_row_push(ctx, 0.12f);
+            if (i > 0 && nk_button_label(ctx, "Del")) {
+                cdm_manager_queue_remove(g_mgr, i);
+                persist_settings();
+            } else nk_label(ctx, "", NK_TEXT_LEFT);
+            nk_layout_row_end(ctx);
+        }
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 3);
+        nk_layout_row_push(ctx, 0.5f);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_newq_name, &g_newq_name_len,
+                       sizeof(g_newq_name)-1, nk_filter_default);
+        nk_layout_row_push(ctx, 0.25f);
+        if (nk_button_label(ctx, "Add")) {
+            if (g_newq_name_len > 0) {
+                cdm_manager_queue_add(g_mgr, g_newq_name);
+                g_newq_name[0]=0; g_newq_name_len=0;
+                persist_settings();
+            }
+        }
+        nk_layout_row_push(ctx, 0.25f);
+        if (nk_button_label(ctx, "Close")) {
+            g_newq_name[0]=0; g_newq_name_len=0; g_show_queues=0;
+        }
+        nk_layout_row_end(ctx);
+
+        /* time-window editor for the selected queue */
+        nk_layout_row_dynamic(ctx, 22, 1);
+        nk_label(ctx, "Daily window for queue (empty = no bound):", NK_TEXT_LEFT);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 4);
+        nk_layout_row_push(ctx, 0.34f);
+        { const char *names[CDM_MAX_QUEUES];
+          for (int i = 0; i < g_mgr->n_queues; i++) names[i] = g_mgr->queues[i].name;
+          if (g_qedit_idx >= g_mgr->n_queues) g_qedit_idx = 0;
+          g_qedit_idx = nk_combo(ctx, names, g_mgr->n_queues, g_qedit_idx,
+                                 20, nk_vec2(200, 200)); }
+        nk_layout_row_push(ctx, 0.22f);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_qedit_start, &g_qedit_start_len,
+                       sizeof(g_qedit_start)-1, nk_filter_default);
+        nk_layout_row_push(ctx, 0.22f);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_qedit_end, &g_qedit_end_len,
+                       sizeof(g_qedit_end)-1, nk_filter_default);
+        nk_layout_row_push(ctx, 0.22f);
+        if (nk_button_label(ctx, "Set")) {
+            cdm_queue *q = &g_mgr->queues[g_qedit_idx];
+            cdm_manager_queue_set(g_mgr, g_qedit_idx, NULL, q->max_active,
+                                  parse_hhmm_min(g_qedit_start),
+                                  parse_hhmm_min(g_qedit_end), q->enabled);
+            g_qedit_start[0]=0; g_qedit_start_len=0;
+            g_qedit_end[0]=0; g_qedit_end_len=0;
+            persist_settings();
+        }
+        nk_layout_row_end(ctx);
+    }
+    nk_end(ctx);
+}
+
+static void draw_edit_modal(struct nk_context *ctx, int win_w, int win_h) {
+    cdm_job *j = (g_edit_id >= 0) ? cdm_manager_find(g_mgr, g_edit_id) : NULL;
+    if (!j) { g_show_edit = 0; return; }
+    struct nk_rect r = nk_rect(win_w/2 - 260, win_h/2 - 180, 520, 360);
+    if (nk_begin(ctx, "Edit Download", r,
+                 NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_MOVABLE)) {
+        nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, "URL:", NK_TEXT_LEFT);
+        nk_layout_row_dynamic(ctx, 26, 1);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_edit_url, &g_edit_url_len,
+                       sizeof(g_edit_url)-1, nk_filter_default);
+        nk_layout_row_dynamic(ctx, 22, 1); nk_label(ctx, "Save as:", NK_TEXT_LEFT);
+        nk_layout_row_dynamic(ctx, 26, 1);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_edit_out, &g_edit_out_len,
+                       sizeof(g_edit_out)-1, nk_filter_default);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 2);
+        nk_layout_row_push(ctx, 0.5f); nk_label(ctx, "Speed (e.g. 500K, 0=off):", NK_TEXT_LEFT);
+        nk_layout_row_push(ctx, 0.5f);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_edit_speed, &g_edit_speed_len,
+                       sizeof(g_edit_speed)-1, nk_filter_decimal);
+        nk_layout_row_end(ctx);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 26, 2);
+        nk_layout_row_push(ctx, 0.5f); nk_label(ctx, "Queue:", NK_TEXT_LEFT);
+        nk_layout_row_push(ctx, 0.5f);
+        queue_combo(ctx, &g_edit_queue, "Run immediately");
+        nk_layout_row_end(ctx);
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
+        nk_layout_row_push(ctx, 0.5f);
+        if (nk_button_label(ctx, "Apply")) {
+            cdm_manager_edit(g_mgr, g_edit_id,
+                             g_edit_url_len ? g_edit_url : NULL,
+                             g_edit_out_len ? g_edit_out : NULL,
+                             parse_speed(g_edit_speed), g_edit_queue);
+            g_show_edit = 0;
+        }
+        nk_layout_row_push(ctx, 0.5f);
+        if (nk_button_label(ctx, "Close")) g_show_edit = 0;
+        nk_layout_row_end(ctx);
     }
     nk_end(ctx);
 }
@@ -574,7 +862,7 @@ static void draw_opts_modal(struct nk_context *ctx) {
                 st.max_active = dlg_maxact;
                 st.theme = dlg_theme;
                 st.skin = dlg_skin;
-                cdm_settings_save(&st);
+                cdm_settings_save(g_mgr, &st);
             }
             dlg_maxact = dlg_theme = dlg_skin = -1; /* re-seed next open */
             g_show_opts=0;
@@ -599,13 +887,15 @@ static void draw_sched_modal(struct nk_context *ctx) {
             cdm_job *job = g_mgr->jobs[i];
             if (job->state != JOB_QUEUED) continue;
             const char *bn = strrchr(job->url,'/'); bn = bn?bn+1:job->url;
+            const char *qn = (job->queue_idx >= 0 && job->queue_idx < g_mgr->n_queues)
+                             ? g_mgr->queues[job->queue_idx].name : "-";
             if (job->sched_epoch>0) {
                 struct tm tmv; struct tm *t = cdm_localtime(&job->sched_epoch, &tmv);
-                if (t) snprintf(line,sizeof line,"[%s] %02d:%02d %.240s",
-                                 job->queued?"Q":"S", t->tm_hour, t->tm_min, bn);
-                else   snprintf(line,sizeof line,"[Q] %.250s", bn);
+                if (t) snprintf(line,sizeof line,"[%s|%.8s] %02d:%02d %.220s",
+                                 job->queue_idx>=0?"Q":"S", qn, t->tm_hour, t->tm_min, bn);
+                else   snprintf(line,sizeof line,"[Q|%.8s] %.240s", qn, bn);
             } else {
-                snprintf(line,sizeof line,"[Q] %.250s", bn);
+                snprintf(line,sizeof line,"[Q|%.8s] %.240s", qn, bn);
             }
             nk_layout_row_dynamic(ctx, 20, 1); nk_label(ctx, line, NK_TEXT_LEFT);
         }
@@ -656,6 +946,7 @@ static void draw_context_menu(struct nk_context *ctx) {
             snprintf(g_props_speed,sizeof g_props_speed,"%lld",(long long)j->cfg.max_speed_bps); }
         if (nk_contextual_item_label(ctx, "Add to Queue", 0)) cdm_manager_add_to_queue(g_mgr, id);
         if (nk_contextual_item_label(ctx, "Delete from Queue", 0)) cdm_manager_remove_from_queue(g_mgr, id);
+        if (nk_contextual_item_label(ctx, "Edit...", 0) && !j->running) open_edit(j);
         nk_contextual_end(ctx);
     }
 }
@@ -738,6 +1029,9 @@ int main(int argc, char **argv) {
 
         draw_context_menu(ctx);
         if (g_show_add)    draw_add_modal(ctx, w, h);
+        if (g_show_batch)  draw_batch_modal(ctx, w, h);
+        if (g_show_queues) draw_queues_modal(ctx, w, h);
+        if (g_show_edit)   draw_edit_modal(ctx, w, h);
         if (g_show_props)  draw_props_modal(ctx);
         if (g_show_opts)   draw_opts_modal(ctx);
         if (g_show_sched)  draw_sched_modal(ctx);
@@ -755,13 +1049,7 @@ int main(int argc, char **argv) {
     nk_glfw3_shutdown(&nk);
     /* Persist Options so they survive a restart (covers theme/skin picked
      * via combo without pressing Apply). */
-    {
-        cdm_settings st;
-        st.max_active = g_mgr->max_active;
-        st.theme = g_theme;
-        st.skin = g_skin;
-        cdm_settings_save(&st);
-    }
+    persist_settings();
     cdm_manager_destroy(g_mgr);
     cdm_global_cleanup();
     glfwTerminate();
