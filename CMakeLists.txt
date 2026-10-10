@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(cdm VERSION 0.2.1 LANGUAGES C)
+project(cdm VERSION 0.2.2 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -139,6 +139,14 @@ if(CDM_BUILD_GUI)
         )
         target_compile_definitions(cdm-gui PRIVATE
             CDM_VERSION_STR="${PROJECT_VERSION}")
+        if(WIN32)
+            # No console window behind the GUI (implies /SUBSYSTEM:WINDOWS).
+            set_target_properties(cdm-gui PROPERTIES WIN32_EXECUTABLE TRUE)
+            if(MSVC)
+                # Keep plain main() as the entry point.
+                target_link_options(cdm-gui PRIVATE "/ENTRY:mainCRTStartup")
+            endif()
+        endif()
         target_include_directories(cdm-gui PRIVATE
             include
             src/engine

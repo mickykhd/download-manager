@@ -46,6 +46,16 @@
 #include <shellapi.h>
 #endif
 
+/* Fatal pre-window error: console builds print to stderr; GUI-subsystem
+ * builds (no console) show a message box instead. */
+static void fatal_box(const char *msg) {
+    fprintf(stderr, "cdm: %s\n", msg);
+#ifdef _WIN32
+    MessageBoxA(NULL, msg, "cdm - Download Manager",
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+#endif
+}
+
 /* Single-instance guard: returns 1 when another copy is already running
  * (and brings its window forward on Windows), 0 when we own the lock. */
 static int cdm_already_running(void) {
@@ -1256,7 +1266,7 @@ void cdm_gui_test_draw_top(struct nk_context *ctx, int w, int h) {
 #if !defined(CDM_UNIT_TEST)
 int main(int argc, char **argv) {
     if (cdm_already_running()) return 0;
-    if (cdm_global_init() != CDM_OK) { fprintf(stderr, "cdm: engine init failed\n"); return 1; }
+    if (cdm_global_init() != CDM_OK) { fatal_box("engine init failed"); return 1; }
     g_mgr = cdm_manager_create();
     cdm_manager_init_categories(g_mgr, g_base_dir);
     cdm_config_default(&g_cfg);
@@ -1295,7 +1305,7 @@ int main(int argc, char **argv) {
         cdm_manager_add_ex(g_mgr, url, outp, &g_cfg, 0, 0);
     }
 
-    if (!glfwInit()) { fprintf(stderr, "cdm: GLFW init failed\n"); return 1; }
+    if (!glfwInit()) { fatal_box("GLFW init failed"); return 1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -1305,10 +1315,10 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++)
         if (strcmp(argv[i], "--minimized") == 0) start_hidden = 1;
     GLFWwindow *win = glfwCreateWindow(win_w, win_h, "cdm - Download Manager", NULL, NULL);
-    if (!win) { fprintf(stderr, "cdm: window create failed\n"); return 1; }
+    if (!win) { fatal_box("window create failed"); return 1; }
     glfwMakeContextCurrent(win);
     glfwSwapInterval(1);
-    if (glewInit() != GLEW_OK) { fprintf(stderr, "cdm: GLEW init failed\n"); return 1; }
+    if (glewInit() != GLEW_OK) { fatal_box("GLEW init failed"); return 1; }
     glfwSetWindowCloseCallback(win, on_close);
     if (cdm_tray_init() == 0 && start_hidden) glfwHideWindow(win);
 

@@ -5,6 +5,12 @@ All notable changes to cdm are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-11
+### Fixed
+- GUI no longer opens a black console window behind it (linked as a
+  Windows GUI-subsystem app). Fatal startup errors now show a message
+  box instead of vanishing into the missing console.
+
 ## [0.2.1] - 2026-10-11
 ### Fixed
 - Installer no longer touches PATH (NSIS "PATH too long" warning on
