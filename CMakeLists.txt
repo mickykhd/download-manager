@@ -168,7 +168,7 @@ install(TARGETS cdm RUNTIME DESTINATION bin)
 # --- Packaging (Windows installer via CPack: ZIP always, NSIS when available) ---
 set(CPACK_PACKAGE_NAME "cdm-download-manager")
 set(CPACK_PACKAGE_VENDOR "cdm")
-set(CPACK_PACKAGE_VERSION "0.1.0")
+set(CPACK_PACKAGE_VERSION "0.1.1")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "cdm - segmented download manager (CLI)")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
     set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
@@ -182,5 +182,19 @@ if(WIN32)
     set(CPACK_NSIS_DISPLAY_NAME "cdm Download Manager")
     set(CPACK_NSIS_PACKAGE_NAME "cdm Download Manager")
     set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+    # Start Menu entries so the app is actually launchable after install
+    # (otherwise only Uninstall.lnk shows up).
+    set(CPACK_NSIS_MENU_LINKS
+        "bin/cdm-gui.exe" "cdm Download Manager"
+        "https://github.com/mickykhd/download-manager" "cdm on GitHub")
+    # Desktop icon for the GUI (+ cleanup on uninstall). Note: backslashes
+    # are quadrupled — CPackConfig.cmake is parsed by CMake a second time,
+    # so \\\\ there becomes \\ there becomes \ in the NSIS script.
+    set(CPACK_NSIS_CREATE_ICONS_EXTRA
+        "CreateShortCut '$DESKTOP\\\\cdm Download Manager.lnk' '$INSTDIR\\\\bin\\\\cdm-gui.exe'")
+    set(CPACK_NSIS_DELETE_ICONS_EXTRA
+        "Delete '$DESKTOP\\\\cdm Download Manager.lnk'")
+    # Offer adding the install tree to PATH during setup.
+    set(CPACK_NSIS_MODIFY_PATH ON)
 endif()
 include(CPack)
