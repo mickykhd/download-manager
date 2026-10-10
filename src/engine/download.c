@@ -236,6 +236,19 @@ cdm_status cdm_download_run(cdm_download *d) {
     st = resolve_paths(d);
     if (st != CDM_OK) return st;
 
+    /* HLS playlists take a dedicated path (own resume/progress); the
+     * shared size/checksum/promote tail below still applies. */
+    {
+        const char *eff = d->probe.effective_url[0] ? d->probe.effective_url
+                                                    : d->url;
+        int is_hls = cdm_hls_should_handle(eff, d->probe.content_type);
+        if (is_hls) {
+            st = cdm_hls_run(d);
+            if (st != CDM_OK) return st; /* HLS keeps its own sidecar */
+            goto promote;
+        }
+    }
+
     st = plan_chunks(d);
     if (st != CDM_OK) return st;
 
@@ -290,6 +303,7 @@ cdm_status cdm_download_run(cdm_download *d) {
         if (st != CDM_OK) return st;
     }
 
+promote:
     /* Promote .part -> final and drop the sidecar. */
     cdm_remove(d->output_path);
     if (cdm_rename(d->part_path, d->output_path) != 0) return CDM_ERR_IO;

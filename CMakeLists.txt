@@ -40,6 +40,7 @@ endif()
 set(CDM_ENGINE_SRC
     src/engine/download.c
     src/engine/connopts.c
+    src/engine/hls.c
     src/engine/httpinfo.c
     src/engine/segment.c
     src/engine/scheduler.c

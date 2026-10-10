@@ -100,6 +100,9 @@ static size_t header_cb(char *buf, size_t size, size_t nitems, void *userp) {
     } else if (hdr_match(line, "Last-Modified", &v)) {
         snprintf(ctx->p->last_modified, sizeof(ctx->p->last_modified), "%.127s", v);
         trim(ctx->p->last_modified);
+    } else if (hdr_match(line, "Content-Type", &v)) {
+        snprintf(ctx->p->content_type, sizeof(ctx->p->content_type), "%.127s", v);
+        trim(ctx->p->content_type);
     } else if (hdr_match(line, "Content-Disposition", &v)) {
         parse_disposition(v, ctx->p->filename, sizeof(ctx->p->filename));
     } else if (hdr_match(line, "Content-Range", &v)) {

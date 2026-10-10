@@ -32,6 +32,7 @@ typedef struct {
     int accept_ranges;     /* server advertises byte ranges */
     char etag[256];        /* strong validator (empty if none/weak) */
     char last_modified[128];
+    char content_type[128];/* response Content-Type (for HLS sniffing) */
     char filename[512];    /* derived name (Content-Disposition or URL) */
     char effective_url[2048];
 } cdm_probe;
@@ -128,6 +129,15 @@ void cdm_emit_progress(struct cdm_download *d);
 
 /* integrity.c */
 cdm_status cdm_verify_sha256(const char *path, const char *expected_hex);
+
+/* hls.c: pure helpers (unit-tested) + segmented-media run path */
+int cdm_hls_should_handle(const char *url, const char *content_type);
+void cdm_hls_resolve(const char *base, const char *ref, char *out, size_t cap);
+int cdm_hls_pick_variant(const char *doc, char *out, size_t cap);
+int cdm_hls_segments(const char *doc, char *map_uri, size_t map_cap,
+                     char (*uris)[2048], int cap);
+struct cdm_download;
+cdm_status cdm_hls_run(struct cdm_download *d);
 
 /* download.c: parse an HTTP date ("Wed, 21 Oct 2015 07:28:00 GMT") to
  * unix seconds, -1 when unparsable. */
