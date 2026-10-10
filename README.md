@@ -8,7 +8,11 @@ SHA-256 integrity gate.
 ## Features
 
 * **Segmented downloads** — multi-connection HTTP Range, resume,
-  retry/backoff, ETag change detection, SHA-256 gate.
+  retry/backoff, ETag change detection, SHA-256 gate, dynamic straggler
+  splitting, sparse files, Last-Modified preservation.
+* **HLS streams** — `.m3u8` auto-detected (suffix or content type),
+  best-variant pick, init segments, per-segment resume (clear streams;
+  AES-128 reports a clean error).
 * **Named queues** — per-queue concurrency limits and daily time windows;
   batch import (one URL per line, `{start:end}` range expansion).
 * **Connection settings** — proxy (direct/system/manual incl. WinINET),

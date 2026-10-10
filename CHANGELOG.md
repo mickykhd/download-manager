@@ -5,6 +5,20 @@ All notable changes to cdm are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-11
+### Added
+- Job persistence: the whole list (queued/paused/history) survives
+  restarts via jobs.conf; duplicate strategy (auto-rename/overwrite).
+- Editable categories (rename/folders, custom slots) with persistence.
+- Engine: dynamic straggler splitting, sparse allocation, Last-Modified
+  stamping, TLS-verification toggle, proxy credentials.
+- Behavior dialogs: power actions (shutdown/sleep/hibernate on drain),
+  progress/completion/error popups, exit confirmation, sounds.
+- List UX: search filter, sortable columns, Ctrl+multi-select with bulk
+  stop/resume/delete.
+- HLS (.m3u8) downloads with variant pick, init segments and resume.
+- Browser extension (MV3): bridge, popup, options, auto-capture.
+
 ## [0.2.3] - 2026-10-11
 ### Added
 - Quick-launch tray menu: Show, New download, New from clipboard,

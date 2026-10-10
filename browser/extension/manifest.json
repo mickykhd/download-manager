@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "cdm Browser Bridge",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Send downloads to the cdm Download Manager running on this computer.",
   "permissions": ["downloads", "contextMenus", "storage", "nativeMessaging", "activeTab"],
   "host_permissions": ["http://127.0.0.1/*"],
