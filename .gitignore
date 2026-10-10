@@ -17,3 +17,4 @@ downloads/
 .vscode/
 .DS_Store
 _CPack_Packages/
+SHA256SUMS.txt
