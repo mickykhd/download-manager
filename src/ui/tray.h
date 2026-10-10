@@ -15,6 +15,11 @@ void cdm_tray_notify(const char *title, const char *msg);
 /* polled by the main loop (auto-cleared on read) */
 int cdm_tray_exit_requested(void);
 int cdm_tray_show_requested(void);
+int cdm_tray_add_url_requested(void);
+/* clipboard "add URL" request; copies text into out, returns 1 if any */
+int cdm_tray_clipboard_requested(char *out, size_t cap);
+int cdm_tray_pause_all_requested(void);
+int cdm_tray_settings_requested(void);
 
 /* Auto-start on login. Windows: HKCU Run key; Linux: autostart .desktop. */
 int cdm_autostart_get(void);

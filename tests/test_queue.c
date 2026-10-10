@@ -125,6 +125,29 @@ int main(void) {
         cdm_manager_destroy(m);
     }
 
+    /* pause_all / resume_all / any_running (no threads involved) */
+    {
+        cdm_manager *m = cdm_manager_create();
+        cdm_config cfg = test_cfg();
+        int a = cdm_manager_add_ex(m, "http://127.0.0.1:9/p1.bin",
+                                   NULL, &cfg, 1, 0);
+        int b = cdm_manager_add_ex(m, "http://127.0.0.1:9/p2.bin",
+                                   NULL, &cfg, 1, 0);
+        CHECK(a >= 0 && b >= 0, "two queued jobs created");
+        CHECK(cdm_manager_any_running(m) == 0, "nothing running");
+        cdm_manager_pause(m, a); /* QUEUED -> PAUSED */
+        cdm_manager_resume_all(m);
+        {
+            cdm_job *ja = cdm_manager_find(m, a);
+            cdm_job *jb = cdm_manager_find(m, b);
+            CHECK(ja && ja->state == JOB_QUEUED, "paused job re-queued");
+            CHECK(jb && jb->state == JOB_QUEUED, "queued job untouched");
+        }
+        cdm_manager_pause_all(m); /* nothing running: no-op, no crash */
+        CHECK(cdm_manager_any_running(m) == 0, "still nothing running");
+        cdm_manager_destroy(m);
+    }
+
     /* edit path on a queued job */
     {
         cdm_manager *m = cdm_manager_create();

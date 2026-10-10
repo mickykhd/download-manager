@@ -145,6 +145,12 @@ void cdm_manager_stop(cdm_manager *m, int id);       /* stop -> requeue if queue
 void cdm_manager_remove(cdm_manager *m, int id);     /* cancel + free when idle */
 void cdm_manager_stop_all(cdm_manager *m);
 void cdm_manager_delete_all_completed(cdm_manager *m);
+/* Pause everything running; re-queue every paused job into the default
+ * queue so the scheduler restarts them respecting limits. */
+void cdm_manager_pause_all(cdm_manager *m);
+void cdm_manager_resume_all(cdm_manager *m);
+/* 1 when any job is running, else 0. */
+int cdm_manager_any_running(cdm_manager *m);
 
 /* Queue controls */
 void cdm_manager_add_to_queue(cdm_manager *m, int id);
@@ -205,6 +211,8 @@ typedef struct {
     int tray_close;  /* close button hides to tray instead of quitting */
     int autostart;   /* start with OS login (managed live, persisted too) */
     int update_check;/* check GitHub releases at startup */
+    int tray_icon;   /* show system tray icon */
+    int tray_minimize; /* minimize button hides to tray */
 } cdm_settings;
 
 void cdm_settings_default(cdm_settings *s);

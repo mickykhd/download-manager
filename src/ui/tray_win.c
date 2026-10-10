@@ -12,14 +12,23 @@
 #define CDM_TRAY_ID 1
 #define CDM_MENU_SHOW 1001
 #define CDM_MENU_EXIT 1002
+#define CDM_MENU_ADDURL 1003
+#define CDM_MENU_CLIPBOARD 1004
+#define CDM_MENU_PAUSEALL 1005
+#define CDM_MENU_SETTINGS 1006
 
 static HWND g_msgwin = NULL;
 static HANDLE g_thread = NULL;
 static volatile int g_run = 0;
 static volatile int g_exit_req = 0;
 static volatile int g_show_req = 0;
+static volatile int g_addurl_req = 0;
+static volatile int g_clip_req = 0;
+static volatile int g_pause_req = 0;
+static volatile int g_settings_req = 0;
 static volatile int g_ready = 0;
 static char g_tip[128] = "cdm Download Manager";
+static char g_clip[2048] = {0};
 static CRITICAL_SECTION g_tip_cs;
 
 static void utf8_to_wide(const char *s, wchar_t *out, int cap) {
@@ -73,7 +82,14 @@ static LRESULT CALLBACK tray_wndproc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
             POINT pt;
             HMENU menu = CreatePopupMenu();
             GetCursorPos(&pt);
-            AppendMenuA(menu, MF_STRING, CDM_MENU_SHOW, "Show cdm");
+            AppendMenuA(menu, MF_STRING, CDM_MENU_SHOW, "Show download list");
+            AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
+            AppendMenuA(menu, MF_STRING, CDM_MENU_ADDURL, "New download...");
+            AppendMenuA(menu, MF_STRING, CDM_MENU_CLIPBOARD, "New download from clipboard");
+            AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
+            AppendMenuA(menu, MF_STRING, CDM_MENU_PAUSEALL, "Pause / resume all");
+            AppendMenuA(menu, MF_STRING, CDM_MENU_SETTINGS, "Settings...");
+            AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
             AppendMenuA(menu, MF_STRING, CDM_MENU_EXIT, "Exit");
             SetForegroundWindow(hw);
             TrackPopupMenu(menu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y,
@@ -88,6 +104,26 @@ static LRESULT CALLBACK tray_wndproc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
         int id = (int)LOWORD(wp);
         if (id == CDM_MENU_SHOW) g_show_req = 1;
         else if (id == CDM_MENU_EXIT) g_exit_req = 1;
+        else if (id == CDM_MENU_ADDURL) g_addurl_req = 1;
+        else if (id == CDM_MENU_SETTINGS) g_settings_req = 1;
+        else if (id == CDM_MENU_PAUSEALL) g_pause_req = 1;
+        else if (id == CDM_MENU_CLIPBOARD) {
+            /* snapshot clipboard text now (tray thread owns the timing) */
+            if (OpenClipboard(hw)) {
+                HANDLE h = GetClipboardData(CF_TEXT);
+                if (h) {
+                    const char *t = (const char *)GlobalLock(h);
+                    if (t) {
+                        EnterCriticalSection(&g_tip_cs);
+                        snprintf(g_clip, sizeof(g_clip), "%s", t);
+                        LeaveCriticalSection(&g_tip_cs);
+                        g_clip_req = 1;
+                        GlobalUnlock(h);
+                    }
+                }
+                CloseClipboard();
+            }
+        }
         return 0;
     }
     if (msg == WM_DESTROY) {
@@ -202,6 +238,35 @@ int cdm_tray_exit_requested(void) {
 int cdm_tray_show_requested(void) {
     int r = g_show_req;
     g_show_req = 0;
+    return r;
+}
+
+int cdm_tray_add_url_requested(void) {
+    int r = g_addurl_req;
+    g_addurl_req = 0;
+    return r;
+}
+
+int cdm_tray_clipboard_requested(char *out, size_t cap) {
+    int r = g_clip_req;
+    g_clip_req = 0;
+    if (r && out && cap > 0) {
+        EnterCriticalSection(&g_tip_cs);
+        snprintf(out, cap, "%s", g_clip);
+        LeaveCriticalSection(&g_tip_cs);
+    }
+    return r;
+}
+
+int cdm_tray_pause_all_requested(void) {
+    int r = g_pause_req;
+    g_pause_req = 0;
+    return r;
+}
+
+int cdm_tray_settings_requested(void) {
+    int r = g_settings_req;
+    g_settings_req = 0;
     return r;
 }
 

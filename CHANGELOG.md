@@ -5,6 +5,13 @@ All notable changes to cdm are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-11
+### Added
+- Quick-launch tray menu: Show, New download, New from clipboard,
+  Pause/resume all, Settings, Exit (left-click shows the window).
+- Tray settings: Show tray icon on/off, Minimize to tray, Close to tray.
+- Auto-start and user-PATH setup verified end-to-end on Windows.
+
 ## [0.2.2] - 2026-10-11
 ### Fixed
 - GUI no longer opens a black console window behind it (linked as a

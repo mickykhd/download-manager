@@ -157,15 +157,30 @@ static int g_tray_close = 0;
 static int g_autostart = 0;
 static int g_inpath = 0;
 static int g_update_check = 1;
+static int g_tray_icon = 1;
+static int g_tray_minimize = 0;
+static int g_tray_up = 0;
 static int g_update_state = 0; /* cdm_update_poll result cache */
 static char g_update_tag[64] = {0};
 
 /* Close button: hide to tray when enabled, else quit. */
 static void on_close(GLFWwindow *w) {
-    if (g_tray_close) {
+    if (g_tray_close && g_tray_up) {
         glfwHideWindow(w);
         glfwSetWindowShouldClose(w, GLFW_FALSE);
     }
+}
+
+/* Minimize button: hide to tray when enabled (restored via tray menu). */
+static void on_iconify(GLFWwindow *w, int iconified) {
+    if (iconified && g_tray_minimize && g_tray_up)
+        glfwHideWindow(w);
+}
+
+static void show_main_window(GLFWwindow *w) {
+    glfwShowWindow(w);
+    glfwRestoreWindow(w);
+    glfwFocusWindow(w);
 }
 
 static void open_url(const char *u) {
@@ -898,6 +913,8 @@ static void persist_settings(void) {
     st.tray_close = g_tray_close;
     st.autostart = g_autostart;
     st.update_check = g_update_check;
+    st.tray_icon = g_tray_icon;
+    st.tray_minimize = g_tray_minimize;
     cdm_settings_save(g_mgr, &st);
 }
 
@@ -1085,12 +1102,13 @@ static void draw_props_modal(struct nk_context *ctx) {
 }
 
 static void draw_opts_modal(struct nk_context *ctx) {
-    struct nk_rect r = nk_rect(360, 200, 380, 330);
+    struct nk_rect r = nk_rect(360, 160, 380, 420);
     if (nk_begin(ctx, "Options", r, NK_WINDOW_TITLE|NK_WINDOW_BORDER|NK_WINDOW_MOVABLE)) {
         /* Staged copies: combos/property edit these, globals change only on
          * Apply (Close discards). Seeded from live values on each opening. */
         static int dlg_maxact = -1, dlg_theme = -1, dlg_skin = -1;
         static int dlg_tray = -1, dlg_auto = -1, dlg_upd = -1, dlg_path = -1;
+        static int dlg_ticon = -1, dlg_tmin = -1;
         if (dlg_maxact < 0) {
             dlg_maxact = g_mgr->max_active;
             dlg_theme = g_theme;
@@ -1099,6 +1117,8 @@ static void draw_opts_modal(struct nk_context *ctx) {
             dlg_auto = g_autostart;
             dlg_upd = g_update_check;
             dlg_path = g_inpath = cdm_path_get();
+            dlg_ticon = g_tray_icon;
+            dlg_tmin = g_tray_minimize;
         }
         nk_layout_row_dynamic(ctx, 24, 1); nk_label(ctx, "Max concurrent downloads:", NK_TEXT_LEFT);
         nk_layout_row_dynamic(ctx, 26, 1);
@@ -1119,7 +1139,11 @@ static void draw_opts_modal(struct nk_context *ctx) {
         nk_layout_row_end(ctx);
 
         nk_layout_row_dynamic(ctx, 24, 1);
+        nk_checkbox_label(ctx, "Show tray icon", &dlg_ticon);
+        nk_layout_row_dynamic(ctx, 24, 1);
         nk_checkbox_label(ctx, "Close to tray instead of quitting", &dlg_tray);
+        nk_layout_row_dynamic(ctx, 24, 1);
+        nk_checkbox_label(ctx, "Minimize to tray", &dlg_tmin);
         nk_layout_row_dynamic(ctx, 24, 1);
         nk_checkbox_label(ctx, "Start with Windows", &dlg_auto);
         nk_layout_row_dynamic(ctx, 24, 1);
@@ -1133,7 +1157,13 @@ static void draw_opts_modal(struct nk_context *ctx) {
             g_theme = dlg_theme;
             g_skin = dlg_skin;
             g_tray_close = dlg_tray ? 1 : 0;
+            g_tray_minimize = dlg_tmin ? 1 : 0;
             g_update_check = dlg_upd ? 1 : 0;
+            if (!!g_tray_icon != !!dlg_ticon) {
+                g_tray_icon = dlg_ticon ? 1 : 0;
+                if (g_tray_icon) g_tray_up = (cdm_tray_init() == 0);
+                else { cdm_tray_shutdown(); g_tray_up = 0; }
+            }
             if (!!g_autostart != !!dlg_auto) {
                 if (cdm_autostart_set(dlg_auto ? 1 : 0) == 0)
                     g_autostart = dlg_auto ? 1 : 0;
@@ -1146,12 +1176,14 @@ static void draw_opts_modal(struct nk_context *ctx) {
             persist_settings();
             dlg_maxact = dlg_theme = dlg_skin = -1;
             dlg_tray = dlg_auto = dlg_upd = dlg_path = -1; /* re-seed next open */
+            dlg_ticon = dlg_tmin = -1;
             g_show_opts=0;
         }
         nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "Close")) {
             dlg_maxact = dlg_theme = dlg_skin = -1; /* discard staged edits */
             dlg_tray = dlg_auto = dlg_upd = dlg_path = -1;
+            dlg_ticon = dlg_tmin = -1;
             g_show_opts=0;
         }
         nk_layout_row_end(ctx);
@@ -1290,6 +1322,8 @@ int main(int argc, char **argv) {
         g_tray_close = st.tray_close;
         g_autostart = cdm_autostart_get();
         g_update_check = st.update_check;
+        g_tray_icon = st.tray_icon;
+        g_tray_minimize = st.tray_minimize;
         restart_ipc_server();
         if (g_update_check)
             cdm_update_check_async("mickykhd/download-manager");
@@ -1320,7 +1354,9 @@ int main(int argc, char **argv) {
     glfwSwapInterval(1);
     if (glewInit() != GLEW_OK) { fatal_box("GLEW init failed"); return 1; }
     glfwSetWindowCloseCallback(win, on_close);
-    if (cdm_tray_init() == 0 && start_hidden) glfwHideWindow(win);
+    glfwSetWindowIconifyCallback(win, on_iconify);
+    g_tray_up = (g_tray_icon && cdm_tray_init() == 0);
+    if (start_hidden && g_tray_up) glfwHideWindow(win);
 
     struct nk_glfw nk;
     /* The backend leaves input state (text_len, key_events, scroll)
@@ -1371,9 +1407,40 @@ int main(int argc, char **argv) {
             static int n_notified = 0;
             tick++;
             if (cdm_tray_exit_requested()) break;
-            if (cdm_tray_show_requested()) {
-                glfwShowWindow(win);
-                glfwFocusWindow(win);
+            if (cdm_tray_show_requested()) show_main_window(win);
+            if (cdm_tray_add_url_requested()) {
+                g_url[0] = 0; g_url_len = 0;
+                g_show_add = 1;
+                show_main_window(win);
+            }
+            if (cdm_tray_settings_requested()) {
+                g_show_opts = 1;
+                show_main_window(win);
+            }
+            if (cdm_tray_pause_all_requested()) {
+                if (cdm_manager_any_running(g_mgr))
+                    cdm_manager_pause_all(g_mgr);
+                else
+                    cdm_manager_resume_all(g_mgr);
+            }
+            {
+                static char clip[2048];
+                if (cdm_tray_clipboard_requested(clip, sizeof(clip))) {
+                    /* trim + accept when it looks like a URL */
+                    char *s = clip;
+                    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
+                    {
+                        char *e = s + strlen(s);
+                        while (e > s && (e[-1] == ' ' || e[-1] == '\t' ||
+                                         e[-1] == '\r' || e[-1] == '\n')) *--e = 0;
+                    }
+                    if (s[0]) {
+                        snprintf(g_url, sizeof(g_url), "%s", s);
+                        g_url_len = (int)strlen(g_url);
+                        g_show_add = 1;
+                        show_main_window(win);
+                    }
+                }
             }
             if ((tick % 120) == 0) {
                 int active = 0;

@@ -307,6 +307,8 @@ void cdm_settings_default(cdm_settings *s) {
     s->tray_close = 0;
     s->autostart = 0;
     s->update_check = 1;
+    s->tray_icon = 1;
+    s->tray_minimize = 0;
 }
 
 static int clamp_int(int v, int lo, int hi) {
@@ -416,6 +418,10 @@ void cdm_settings_load(cdm_manager *m, cdm_settings *s) {
             s->autostart = val ? 1 : 0;
         else if (strcmp(key, "update_check") == 0)
             s->update_check = val ? 1 : 0;
+        else if (strcmp(key, "tray_icon") == 0)
+            s->tray_icon = val ? 1 : 0;
+        else if (strcmp(key, "tray_minimize") == 0)
+            s->tray_minimize = val ? 1 : 0;
         /* unknown keys ignored for forward compatibility */
     }
     fclose(f);
@@ -457,6 +463,8 @@ int cdm_settings_save(const cdm_manager *m, const cdm_settings *s) {
     fprintf(f, "tray_close %d\n", s->tray_close ? 1 : 0);
     fprintf(f, "autostart %d\n", s->autostart ? 1 : 0);
     fprintf(f, "update_check %d\n", s->update_check ? 1 : 0);
+    fprintf(f, "tray_icon %d\n", s->tray_icon ? 1 : 0);
+    fprintf(f, "tray_minimize %d\n", s->tray_minimize ? 1 : 0);
     if (s->api_key[0])
         fprintf(f, "api_key %s\n", s->api_key);
     if (m) {
@@ -953,6 +961,48 @@ void cdm_manager_stop_all(cdm_manager *m) {
         cdm_mutex_unlock(j->mtx);
     }
     cdm_mutex_unlock(m->mtx);
+}
+
+void cdm_manager_pause_all(cdm_manager *m) {
+    cdm_mutex_lock(m->mtx);
+    for (int i = 0; i < m->count; i++) {
+        cdm_job *j = m->jobs[i];
+        cdm_mutex_lock(j->mtx);
+        if (j->running) {
+            j->pause_req = 1;
+            cdm_download_cancel(j->dl);
+        }
+        cdm_mutex_unlock(j->mtx);
+    }
+    cdm_mutex_unlock(m->mtx);
+}
+
+void cdm_manager_resume_all(cdm_manager *m) {
+    cdm_mutex_lock(m->mtx);
+    for (int i = 0; i < m->count; i++) {
+        cdm_job *j = m->jobs[i];
+        cdm_mutex_lock(j->mtx);
+        if (!j->running && j->state == JOB_PAUSED) {
+            j->queue_idx = m->default_queue;
+            j->state = JOB_QUEUED;
+        }
+        cdm_mutex_unlock(j->mtx);
+    }
+    cdm_mutex_unlock(m->mtx);
+}
+
+int cdm_manager_any_running(cdm_manager *m) {
+    int r = 0;
+    cdm_mutex_lock(m->mtx);
+    for (int i = 0; i < m->count; i++) {
+        cdm_job *j = m->jobs[i];
+        cdm_mutex_lock(j->mtx);
+        if (j->running) r = 1;
+        cdm_mutex_unlock(j->mtx);
+        if (r) break;
+    }
+    cdm_mutex_unlock(m->mtx);
+    return r;
 }
 
 void cdm_manager_delete_all_completed(cdm_manager *m) {

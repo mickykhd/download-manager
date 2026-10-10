@@ -21,6 +21,14 @@ void cdm_tray_notify(const char *title, const char *msg) {
 }
 int cdm_tray_exit_requested(void) { return 0; }
 int cdm_tray_show_requested(void) { return 0; }
+int cdm_tray_add_url_requested(void) { return 0; }
+int cdm_tray_clipboard_requested(char *out, size_t cap) {
+    (void)out;
+    (void)cap;
+    return 0;
+}
+int cdm_tray_pause_all_requested(void) { return 0; }
+int cdm_tray_settings_requested(void) { return 0; }
 
 int cdm_autostart_get(void) {
     const char *home = getenv("HOME");
