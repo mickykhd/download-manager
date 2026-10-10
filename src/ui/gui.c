@@ -11,6 +11,7 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <ctype.h>
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
@@ -278,10 +279,85 @@ static int g_theme = 0;   /* 0 dark, 1 light */
 static int g_skin = 0;    /* 0 blue,1 teal,2 red,3 purple */
 
 static int g_cat_filter = -1; /* -1 = all */
+static char g_search[256] = {0}; static int g_search_len = 0;
+static int g_sort_col = -1;  /* -1 = insertion order */
+static int g_sort_dir = 1;   /* 1 asc, -1 desc */
+static int g_multi[256]; static int g_n_multi = 0;
 
 static void open_edit(cdm_job *j); /* defined after draw_toolbar */
+static void multi_clear(void); /* defined with the list helpers */
+/* selection for bulk actions: the multi set, else the primary selection */
+static int bulk_ids(int *out, int cap) {
+    int n = 0;
+    if (g_n_multi > 0) {
+        for (int i = 0; i < g_n_multi && n < cap; i++) {
+            if (cdm_manager_find(g_mgr, g_multi[i]))
+                out[n++] = g_multi[i];
+        }
+    } else if (g_mgr->selected_id >= 0 &&
+               cdm_manager_find(g_mgr, g_mgr->selected_id)) {
+        out[n++] = g_mgr->selected_id;
+    }
+    return n;
+}
+static void bulk_stop(void) {
+    int ids[256];
+    int n = bulk_ids(ids, 256);
+    for (int i = 0; i < n; i++) cdm_manager_stop(g_mgr, ids[i]);
+}
+static void bulk_resume(void) {
+    int ids[256];
+    int n = bulk_ids(ids, 256);
+    for (int i = 0; i < n; i++) {
+        cdm_job *j = cdm_manager_find(g_mgr, ids[i]);
+        if (j && (j->state == JOB_PAUSED || j->state == JOB_QUEUED))
+            cdm_manager_resume(g_mgr, ids[i]);
+    }
+}
+static void bulk_remove(void) {
+    int ids[256];
+    int n = bulk_ids(ids, 256);
+    for (int i = 0; i < n; i++) cdm_manager_remove(g_mgr, ids[i]);
+    multi_clear();
+}
 static void persist_settings(void); /* defined with the modals */
 static void restart_ipc_server(void); /* defined with the modals */
+
+/* case-insensitive substring search */
+static int contains_i(const char *hay, const char *needle) {
+    size_t nl;
+    if (!needle || !*needle) return 1;
+    if (!hay) return 0;
+    nl = strlen(needle);
+    for (; *hay; hay++) {
+        size_t k = 0;
+        while (k < nl && hay[k] &&
+               tolower((unsigned char)hay[k]) == tolower((unsigned char)needle[k]))
+            k++;
+        if (k == nl) return 1;
+    }
+    return 0;
+}
+
+static int multi_has(int id) {
+    for (int i = 0; i < g_n_multi; i++)
+        if (g_multi[i] == id) return 1;
+    return 0;
+}
+
+static void multi_toggle(int id) {
+    for (int i = 0; i < g_n_multi; i++) {
+        if (g_multi[i] == id) {
+            memmove(&g_multi[i], &g_multi[i+1],
+                    (size_t)(g_n_multi - i - 1) * sizeof(int));
+            g_n_multi--;
+            return;
+        }
+    }
+    if (g_n_multi < 256) g_multi[g_n_multi++] = id;
+}
+
+static void multi_clear(void) { g_n_multi = 0; }
 
 /* local IPC (browser native-messaging -> running app) */
 static int g_ipc_sock = -1;
@@ -458,6 +534,9 @@ static void draw_menubar(struct nk_context *ctx) {
         if (nk_menu_item_label(ctx, "Delete from Queue", NK_TEXT_LEFT) && j) cdm_manager_remove_from_queue(g_mgr, j->id);
         if (nk_menu_item_label(ctx, "Delete All Completed", NK_TEXT_LEFT)) cdm_manager_delete_all_completed(g_mgr);
         if (nk_menu_item_label(ctx, "Categories...", NK_TEXT_LEFT)) g_show_cats = 1;
+        if (nk_menu_item_label(ctx, "Stop selected", NK_TEXT_LEFT)) bulk_stop();
+        if (nk_menu_item_label(ctx, "Resume selected", NK_TEXT_LEFT)) bulk_resume();
+        if (nk_menu_item_label(ctx, "Delete selected", NK_TEXT_LEFT)) bulk_remove();
         nk_menu_end(ctx);
     }
     nk_layout_row_push(ctx, 0.18f);
@@ -732,71 +811,183 @@ static void draw_categories(struct nk_context *ctx) {
 /* Same nesting rule as draw_categories: the "jobs" group is the pushed row
  * item itself. Stats are returned via out-params; the status bar is drawn
  * by draw_body() after the row ends. */
+/* Flat display snapshot so the list can filter + sort without holding locks. */
+#define CDM_LIST_CAP 4096
+typedef struct {
+    int id;
+    char name[256];
+    int64_t size, dl;
+    double speed, eta;
+    int xfer;
+    int state, qidx, sched;
+    double pct;
+} list_row_t;
+
+static int list_row_cmp(const void *a, const void *b) {
+    const list_row_t *x = (const list_row_t *)a;
+    const list_row_t *y = (const list_row_t *)b;
+    int r = 0;
+    switch (g_sort_col) {
+    case 0: {
+        const char *p = x->name, *q = y->name;
+        while (*p && *q &&
+               tolower((unsigned char)*p) == tolower((unsigned char)*q)) {
+            p++;
+            q++;
+        }
+        r = (int)tolower((unsigned char)*p) - (int)tolower((unsigned char)*q);
+        break;
+    }
+    case 1: r = (x->size > y->size) - (x->size < y->size); break;
+    case 2: r = x->state - y->state; break;
+    case 3: r = (x->pct > y->pct) - (x->pct < y->pct); break;
+    case 4: r = (x->speed > y->speed) - (x->speed < y->speed); break;
+    default: r = 0; break;
+    }
+    if (r == 0) r = x->id - y->id;
+    return r * g_sort_dir;
+}
+
 static void draw_list(struct nk_context *ctx, int *active, double *total_speed) {
     *active = 0;
     *total_speed = 0;
     char s_size[32], s_spd[32], s_eta[16], s_dl[32];
+    static list_row_t rows[CDM_LIST_CAP];
+    int nrows = 0;
 
     if (nk_group_begin(ctx, "jobs", NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)) {
-        /* headers */
+        /* search */
+        nk_layout_row_begin(ctx, NK_DYNAMIC, 24, 2);
+        nk_layout_row_push(ctx, 0.15f); nk_label(ctx, "Search:", NK_TEXT_LEFT);
+        nk_layout_row_push(ctx, 0.85f);
+        nk_edit_string(ctx, NK_EDIT_FIELD, g_search, &g_search_len,
+                       sizeof(g_search)-1, nk_filter_default);
+        nk_layout_row_end(ctx);
+
+        /* snapshot visible jobs */
+        cdm_mutex_lock(g_mgr->mtx);
+        for (int i = 0; i < g_mgr->count && nrows < CDM_LIST_CAP; i++) {
+            cdm_job *job = g_mgr->jobs[i];
+            list_row_t *r;
+            cdm_progress p;
+            int st, qidx, sched, id, cat;
+            char url[2048], out[2048];
+            if (g_cat_filter >= 0 && job->cat_idx != g_cat_filter) continue;
+            cdm_mutex_lock(job->mtx);
+            p = job->prog;
+            st = job->state;
+            qidx = job->queue_idx;
+            sched = (job->sched_epoch > 0);
+            id = job->id;
+            cat = job->cat_idx;
+            snprintf(url, sizeof(url), "%s", job->url);
+            snprintf(out, sizeof(out), "%s", job->outpath);
+            cdm_mutex_unlock(job->mtx);
+            (void)cat;
+            {
+                const char *bn = out[0] ? strrchr(out, '/') : NULL;
+                const char *bu = strrchr(url, '/');
+#ifdef _WIN32
+                if (out[0]) {
+                    const char *w = strrchr(out, '\\');
+                    if (w && (!bn || w > bn)) bn = w;
+                }
+#endif
+                if (!bn) bn = bu ? bu + 1 : url;
+                else bn = bn + 1;
+                if (!bn || !*bn) bn = url;
+                r = &rows[nrows];
+                r->id = id;
+                snprintf(r->name, sizeof(r->name), "%s", bn);
+                if (!contains_i(r->name, g_search) && !contains_i(url, g_search))
+                    continue;
+                r->size = p.total_bytes;
+                r->dl = p.downloaded_bytes;
+                r->speed = p.speed_bps;
+                r->eta = p.eta_seconds;
+                r->xfer = p.active_connections;
+                r->state = st;
+                r->qidx = qidx;
+                r->sched = sched;
+                r->pct = (p.total_bytes > 0 && p.downloaded_bytes > 0)
+                         ? 100.0 * (double)p.downloaded_bytes / (double)p.total_bytes : 0.0;
+                nrows++;
+            }
+            if (st == JOB_RUNNING) { (*active)++; *total_speed += p.speed_bps; }
+        }
+        cdm_mutex_unlock(g_mgr->mtx);
+        if (g_sort_col >= 0)
+            qsort(rows, (size_t)nrows, sizeof(rows[0]), list_row_cmp);
+
+        /* headers (click to sort) */
         nk_layout_row_begin(ctx, NK_DYNAMIC, 22, 9);
         float w[9] = {0.24f,0.09f,0.10f,0.18f,0.08f,0.08f,0.09f,0.06f,0.04f};
         const char *hdr[9] = {"File","Size","Status","Progress","Speed",
                               "Time","Downloaded","Xfer","Q"};
-        for (int c = 0; c < 9; c++) { nk_layout_row_push(ctx, w[c]);
-            nk_label(ctx, hdr[c], NK_TEXT_LEFT); }
+        const int sortcol[9] = {0, 1, 2, 3, 4, -1, -1, -1, -1};
+        for (int c = 0; c < 9; c++) {
+            char lab[32];
+            nk_layout_row_push(ctx, w[c]);
+            if (sortcol[c] >= 0) {
+                if (g_sort_col == sortcol[c])
+                    snprintf(lab, sizeof lab, "%s %s", hdr[c],
+                             g_sort_dir > 0 ? "▲" : "▼");
+                else
+                    snprintf(lab, sizeof lab, "%s", hdr[c]);
+                if (nk_button_label(ctx, lab)) {
+                    if (g_sort_col == sortcol[c]) g_sort_dir = -g_sort_dir;
+                    else { g_sort_col = sortcol[c]; g_sort_dir = 1; }
+                }
+            } else {
+                nk_label(ctx, hdr[c], NK_TEXT_LEFT);
+            }
+        }
         nk_layout_row_end(ctx);
 
-        cdm_mutex_lock(g_mgr->mtx);
-        for (int i = 0; i < g_mgr->count; i++) {
-            cdm_job *job = g_mgr->jobs[i];
-            if (g_cat_filter >= 0 && job->cat_idx != g_cat_filter) continue;
-
-            cdm_progress p;
-            cdm_mutex_lock(job->mtx);
-            p = job->prog;
-            int st = job->state;
-            int qidx = job->queue_idx;
-            int sched = (job->sched_epoch > 0);
-            cdm_mutex_unlock(job->mtx);
-
-            if (st == JOB_RUNNING) { (*active)++; *total_speed += p.speed_bps; }
-
-            const char *name = job->outpath[0] ? job->outpath
-                              : (strrchr(job->url, '/') ? strrchr(job->url, '/') + 1
-                                                        : job->url);
-            human_bytes(p.total_bytes > 0 ? (double)p.total_bytes : 0, s_size, sizeof s_size);
-            human_bytes(p.speed_bps, s_spd, sizeof s_spd);
-            human_bytes(p.downloaded_bytes, s_dl, sizeof s_dl);
-            fmt_eta(p.eta_seconds, s_eta, sizeof s_eta);
-            const char *stxt = (st == JOB_QUEUED && sched) ? "Scheduled"
-                             : state_name(st);
-
-            nk_layout_row_begin(ctx, NK_DYNAMIC, 24, 9);
-            nk_layout_row_push(ctx, w[0]);
-            { int sel = (job->id == g_mgr->selected_id);
-              if (nk_selectable_label(ctx, name, NK_TEXT_LEFT, &sel))
-                  cdm_manager_select(g_mgr, sel ? job->id : -1); }
-            nk_layout_row_push(ctx, w[1]); nk_label(ctx, s_size, NK_TEXT_LEFT);
-            nk_layout_row_push(ctx, w[2]); nk_label(ctx, stxt, NK_TEXT_LEFT);
-            nk_layout_row_push(ctx, w[3]);
-            { nk_size cur = 0, mx = 100;
-              if (p.total_bytes > 0 && p.downloaded_bytes > 0)
-                  cur = (nk_size)(100.0*(double)p.downloaded_bytes/(double)p.total_bytes);
-              nk_progress(ctx, &cur, mx, NK_FIXED); }
-            nk_layout_row_push(ctx, w[4]); nk_label(ctx, st==JOB_RUNNING?s_spd:"-", NK_TEXT_LEFT);
-            nk_layout_row_push(ctx, w[5]); nk_label(ctx, st==JOB_RUNNING?s_eta:"-", NK_TEXT_LEFT);
-            nk_layout_row_push(ctx, w[6]); nk_label(ctx, s_dl, NK_TEXT_LEFT);
-            nk_layout_row_push(ctx, w[7]);
-            { char x[8]; snprintf(x,sizeof x,"%d",p.active_connections); nk_label(ctx,x,NK_TEXT_LEFT); }
-            nk_layout_row_push(ctx, w[8]);
-            { char q[8];
-              if (qidx >= 0) snprintf(q, sizeof q, "Q%d", qidx);
-              else snprintf(q, sizeof q, "%s", sched ? "S" : "-");
-              nk_label(ctx, q, NK_TEXT_LEFT); }
-            nk_layout_row_end(ctx);
+        {
+            int ctrl = nk_input_is_key_down(&ctx->input, NK_KEY_CTRL);
+            for (int i = 0; i < nrows; i++) {
+                list_row_t *r = &rows[i];
+                human_bytes(r->size > 0 ? (double)r->size : 0, s_size, sizeof s_size);
+                human_bytes(r->speed, s_spd, sizeof s_spd);
+                human_bytes((double)r->dl, s_dl, sizeof s_dl);
+                fmt_eta(r->eta, s_eta, sizeof s_eta);
+                {
+                    char stxt[32];
+                    const char *base = (r->state == JOB_QUEUED && r->sched) ? "Scheduled"
+                                       : state_name(r->state);
+                    snprintf(stxt, sizeof stxt, "%s", base);
+                    nk_layout_row_begin(ctx, NK_DYNAMIC, 24, 9);
+                    nk_layout_row_push(ctx, w[0]);
+                    { int sel = (r->id == g_mgr->selected_id) || multi_has(r->id);
+                      if (nk_selectable_label(ctx, r->name, NK_TEXT_LEFT, &sel)) {
+                          if (ctrl) {
+                              multi_toggle(r->id);
+                              cdm_manager_select(g_mgr, r->id);
+                          } else {
+                              multi_clear();
+                              cdm_manager_select(g_mgr, sel ? r->id : -1);
+                          }
+                      } }
+                    nk_layout_row_push(ctx, w[1]); nk_label(ctx, s_size, NK_TEXT_LEFT);
+                    nk_layout_row_push(ctx, w[2]); nk_label(ctx, stxt, NK_TEXT_LEFT);
+                    nk_layout_row_push(ctx, w[3]);
+                    { nk_size cur = (nk_size)r->pct, mx = 100;
+                      nk_progress(ctx, &cur, mx, NK_FIXED); }
+                    nk_layout_row_push(ctx, w[4]); nk_label(ctx, r->state==JOB_RUNNING?s_spd:"-", NK_TEXT_LEFT);
+                    nk_layout_row_push(ctx, w[5]); nk_label(ctx, r->state==JOB_RUNNING?s_eta:"-", NK_TEXT_LEFT);
+                    nk_layout_row_push(ctx, w[6]); nk_label(ctx, s_dl, NK_TEXT_LEFT);
+                    nk_layout_row_push(ctx, w[7]);
+                    { char x[8]; snprintf(x,sizeof x,"%d",r->xfer); nk_label(ctx,x,NK_TEXT_LEFT); }
+                    nk_layout_row_push(ctx, w[8]);
+                    { char q[8];
+                      if (r->qidx >= 0) snprintf(q, sizeof q, "Q%d", r->qidx);
+                      else snprintf(q, sizeof q, "%s", r->sched ? "S" : "-");
+                      nk_label(ctx, q, NK_TEXT_LEFT); }
+                    nk_layout_row_end(ctx);
+                }
+            }
         }
-        cdm_mutex_unlock(g_mgr->mtx);
         nk_group_end(ctx);
     }
 }
@@ -814,11 +1005,12 @@ static void draw_body(struct nk_context *ctx, float h) {
     draw_list(ctx, &active, &total_speed);
     nk_layout_row_end(ctx);
 
-    char status[160];
+    char status[192];
     snprintf(status, sizeof status,
-             "Active: %d   Total speed: %.1f %s/s   Max concurrent: %d   Theme: %s",
+             "Active: %d   Total speed: %.1f %s/s   Max: %d   Sel: %d   Theme: %s",
              active, total_speed >= 1024 ? total_speed/1024 : total_speed,
              total_speed >= 1024 ? "KB" : "B", g_mgr->max_active,
+             g_n_multi > 0 ? g_n_multi : (g_mgr->selected_id >= 0 ? 1 : 0),
              g_theme ? "Light" : "Dark");
     nk_layout_row_dynamic(ctx, 22, 1);
     nk_label(ctx, status, NK_TEXT_LEFT);
