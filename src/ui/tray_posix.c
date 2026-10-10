@@ -33,6 +33,57 @@ int cdm_autostart_get(void) {
     return f ? 1 : 0;
 }
 
+static int localbin(char *out, size_t cap) {
+    const char *home = getenv("HOME");
+    if (!home || !*home) return -1;
+    snprintf(out, cap, "%s/.local/bin", home);
+    return 0;
+}
+
+static int exedir(char *out, size_t cap) {
+    char path[2048];
+    ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    char *s;
+    if (n <= 0) return -1;
+    path[n] = 0;
+    s = strrchr(path, '/');
+    if (!s) return -1;
+    *s = 0;
+    snprintf(out, cap, "%s", path);
+    return 0;
+}
+
+int cdm_path_get(void) {
+    char dir[1024], link[1150], target[2048];
+    ssize_t n;
+    if (localbin(dir, sizeof(dir)) != 0) return 0;
+    snprintf(link, sizeof(link), "%s/cdm", dir);
+    n = readlink(link, target, sizeof(target) - 1);
+    return n > 0 ? 1 : 0;
+}
+
+int cdm_path_set(int on) {
+    char dir[1024], exe[2048], link[1150], link2[1150];
+    if (localbin(dir, sizeof(dir)) != 0) return -1;
+    if (exedir(exe, sizeof(exe)) != 0) return -1;
+    mkdir(dir, 0755);
+    snprintf(link, sizeof(link), "%s/cdm", dir);
+    snprintf(link2, sizeof(link2), "%s/cdm-gui", dir);
+    if (on) {
+        char t1[2200], t2[2200];
+        snprintf(t1, sizeof(t1), "%s/cdm", exe);
+        snprintf(t2, sizeof(t2), "%s/cdm-gui", exe);
+        remove(link);
+        remove(link2);
+        if (symlink(t1, link) != 0) return -1;
+        symlink(t2, link2); /* gui optional */
+        return 0;
+    }
+    remove(link);
+    remove(link2);
+    return 0;
+}
+
 int cdm_autostart_set(int on) {
     const char *home = getenv("HOME");
     char dir[1024], path[1100], exe[2048];

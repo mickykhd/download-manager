@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(cdm VERSION 0.2.0 LANGUAGES C)
+project(cdm VERSION 0.2.1 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -257,7 +257,11 @@ if(WIN32)
         "CreateShortCut '$DESKTOP\\\\cdm Download Manager.lnk' '$INSTDIR\\\\bin\\\\cdm-gui.exe'")
     set(CPACK_NSIS_DELETE_ICONS_EXTRA
         "Delete '$DESKTOP\\\\cdm Download Manager.lnk'")
-    # Offer adding the install tree to PATH during setup.
-    set(CPACK_NSIS_MODIFY_PATH ON)
+    # Do NOT let the installer touch PATH: its AddToPath helper caps PATH
+    # at 1024 chars (NSIS string limit) and aborts with a scary "PATH too
+    # long" warning on real-world machines. The app itself offers per-user
+    # PATH setup from Options (no length limit). Desktop/Start Menu icons
+    # are still created unconditionally below.
+    set(CPACK_NSIS_MODIFY_PATH OFF)
 endif()
 include(CPack)

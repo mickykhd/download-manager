@@ -36,9 +36,18 @@ static void job_free(cdm_job *j);
 const cdm_category *cdm_manager_category_for_ext(cdm_manager *m,
                                                  const char *name_or_url);
 
-static void ensure_parent_dir(const char *path) {
+/* mkdir every prefix of dir, including dir itself (for directory paths) */
+static void ensure_dir_all(const char *dir) {
     char tmp[2048];
-    snprintf(tmp, sizeof tmp, "%s", path);
+    size_t n;
+    snprintf(tmp, sizeof tmp, "%s", dir);
+    /* drop trailing slashes (but keep "C:/" style roots intact) */
+    n = strlen(tmp);
+    while (n > 1 && (tmp[n-1] == '/' || tmp[n-1] == '\\') &&
+           !(n == 3 && tmp[1] == ':')) {
+        tmp[--n] = 0;
+    }
+    if (!tmp[0]) return;
     for (char *p = tmp + 1; *p; p++) {
         if (*p == '/' || *p == '\\') {
             char sep = *p;
@@ -48,6 +57,23 @@ static void ensure_parent_dir(const char *path) {
         }
     }
     MKDIR(tmp);
+}
+
+/* mkdir the parent chain of a FILE path (never the basename itself) */
+static void ensure_parent_dir(const char *path) {
+    char tmp[2048];
+    char *slash;
+    snprintf(tmp, sizeof tmp, "%s", path);
+    slash = strrchr(tmp, '/');
+#ifdef _WIN32
+    {
+        char *b = strrchr(tmp, '\\');
+        if (b && (!slash || b > slash)) slash = b;
+    }
+#endif
+    if (!slash) return; /* bare filename: current dir */
+    *slash = 0;
+    ensure_dir_all(tmp);
 }
 
 static void job_progress_cb(const cdm_progress *p, void *user) {
@@ -227,7 +253,7 @@ void cdm_manager_init_categories(cdm_manager *m, const char *base_dir) {
         snprintf(m->cats[i].name, sizeof m->cats[i].name, "%s", names[i]);
         snprintf(m->cats[i].dir, sizeof m->cats[i].dir, "%s/%s",
                  base_dir ? base_dir : "downloads", names[i]);
-        ensure_parent_dir(m->cats[i].dir);
+        ensure_dir_all(m->cats[i].dir);
     }
 }
 
@@ -417,7 +443,7 @@ int cdm_settings_save(const cdm_manager *m, const cdm_settings *s) {
 #endif
     if (slash) {
         *slash = 0;
-        ensure_parent_dir(dir);
+        ensure_dir_all(dir);
     }
 
     FILE *f = fopen(path, "wb");

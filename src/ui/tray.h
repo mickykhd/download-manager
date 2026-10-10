@@ -20,4 +20,10 @@ int cdm_tray_show_requested(void);
 int cdm_autostart_get(void);
 int cdm_autostart_set(int on);
 
+/* Per-user PATH management for the install's bin dir (no length limits,
+ * unlike the NSIS installer helper). Windows: HKCU Environment/Path +
+ * broadcast; POSIX: ~/.local/bin symlinks. */
+int cdm_path_get(void);      /* 1 when the install bin is on the user PATH */
+int cdm_path_set(int on);    /* 0 ok, -1 failed */
+
 #endif /* CDM_TRAY_H */

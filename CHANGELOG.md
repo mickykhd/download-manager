@@ -5,6 +5,12 @@ All notable changes to cdm are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-11
+### Fixed
+- Installer no longer touches PATH (NSIS "PATH too long" warning on
+  machines with a long PATH). PATH setup moved into the app:
+  Options → Add install folder to user PATH (no length limit).
+
 ## [0.2.0] - 2026-10-11
 ### Added
 - Named download queues with per-queue concurrency limits and time-window

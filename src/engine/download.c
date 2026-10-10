@@ -4,6 +4,43 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#define CDM_MKDIR(d) _mkdir(d)
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+#define CDM_MKDIR(d) mkdir((d), 0755)
+#endif
+
+/* mkdir the parent chain of a FILE path (engine-level: the CLI and API
+ * bypass the manager, which used to be the only place creating them). */
+static void cdm_ensure_parent(const char *path) {
+    char tmp[2048];
+    char *slash;
+    if (!path || !*path) return;
+    snprintf(tmp, sizeof(tmp), "%s", path);
+    slash = strrchr(tmp, '/');
+#ifdef _WIN32
+    {
+        char *b = strrchr(tmp, '\\');
+        if (b && (!slash || b > slash)) slash = b;
+    }
+#endif
+    if (!slash) return;
+    *slash = 0;
+    if (!tmp[0]) return;
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p == '/' || *p == '\\') {
+            char sep = *p;
+            *p = 0;
+            CDM_MKDIR(tmp);
+            *p = sep;
+        }
+    }
+    CDM_MKDIR(tmp);
+}
+
 const char *cdm_status_str(cdm_status s) {
     switch (s) {
         case CDM_OK:            return "ok";
@@ -168,6 +205,7 @@ cdm_status cdm_download_run(cdm_download *d) {
         cdm_meta_load(d); /* on failure we keep the fresh plan */
     }
 
+    cdm_ensure_parent(d->part_path);
     d->file = cdm_file_open_rw(d->part_path);
     if (!d->file) return CDM_ERR_IO;
 

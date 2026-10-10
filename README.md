@@ -143,6 +143,7 @@ Artifacts land in `build/` (ignored by git; distribute via GitHub Releases).
 | `Could NOT find CURL` | Use `-DCDM_FETCH_CURL=ON` (default on Windows). |
 | Configure fails on `GLEW` / `GLFW` | Pass `-DCDM_BUILD_GUI=OFF` (default on Windows). |
 | `Makefile: pkg-config: command not found` | The `Makefile` is POSIX-only; on Windows use the CMake steps above. |
+| `Warning! PATH too long` during install (≤ v0.2.0) | Harmless: the installer skipped PATH setup (NSIS caps PATH at 1024 chars). Click OK to finish, then in cdm go to **Options → Add install folder to user PATH → Apply**, or run:<br>`$d="C:\Program Files\cdm-download-manager 0.2.1\bin"; [Environment]::SetEnvironmentVariable("Path",[Environment]::GetEnvironmentVariable("Path","User").TrimEnd(";")+";"+$d,"User")` |
 
 ## Layout
 

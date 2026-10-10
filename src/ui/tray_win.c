@@ -205,7 +205,159 @@ int cdm_tray_show_requested(void) {
     return r;
 }
 
-/* Auto-start via HKCU\\...\Run */
+static int bindir(char *out, size_t cap) {
+    char exe[2048], *s;
+    if (GetModuleFileNameA(NULL, exe, sizeof(exe)) == 0) return -1;
+    s = strrchr(exe, '\\');
+    if (!s) return -1;
+    *s = 0;
+    snprintf(out, cap, "%s", exe);
+    return 0;
+}
+
+/* Split HKCU Environment Path handling: read full value (any length),
+ * test for our bin dir (case-insensitive), append/remove as needed. */
+static int read_user_path(char **out, DWORD *type) {
+    HKEY hk;
+    DWORD sz = 0, t = REG_EXPAND_SZ;
+    char *buf;
+    LONG rc;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Environment", 0,
+                      KEY_QUERY_VALUE | KEY_SET_VALUE, &hk) != ERROR_SUCCESS)
+        return -1;
+    rc = RegQueryValueExA(hk, "Path", NULL, &t, NULL, &sz);
+    if (rc != ERROR_SUCCESS) {
+        /* no user PATH yet: treat as empty */
+        buf = (char *)calloc(1, 1);
+        if (!buf) {
+            RegCloseKey(hk);
+            return -1;
+        }
+        *out = buf;
+        if (type) *type = REG_EXPAND_SZ;
+        RegCloseKey(hk);
+        return 0;
+    }
+    buf = (char *)malloc(sz + 2);
+    if (!buf) {
+        RegCloseKey(hk);
+        return -1;
+    }
+    if (RegQueryValueExA(hk, "Path", NULL, &t, (LPBYTE)buf, &sz) != ERROR_SUCCESS) {
+        free(buf);
+        RegCloseKey(hk);
+        return -1;
+    }
+    buf[sz] = 0;
+    *out = buf;
+    if (type) *type = t;
+    RegCloseKey(hk);
+    return 0;
+}
+
+static void broadcast_env_change(void) {
+    SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                        (LPARAM)"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
+}
+
+/* case-insensitive whole-entry match on ';'-separated list */
+static int path_has(const char *path, const char *entry) {
+    size_t elen = strlen(entry);
+    const char *p = path;
+    while (*p) {
+        const char *semi = strchr(p, ';');
+        size_t n = semi ? (size_t)(semi - p) : strlen(p);
+        /* trim trailing slashes for comparison */
+        while (n > 0 && (p[n-1] == '\\' || p[n-1] == '/')) n--;
+        if (n == elen && _strnicmp(p, entry, n) == 0) return 1;
+        if (!semi) break;
+        p = semi + 1;
+    }
+    return 0;
+}
+
+int cdm_path_get(void) {
+    char bin[2048];
+    char *path = NULL;
+    int r = 0;
+    if (bindir(bin, sizeof(bin)) != 0) return 0;
+    if (read_user_path(&path, NULL) != 0) return 0;
+    r = path_has(path, bin);
+    free(path);
+    return r;
+}
+
+int cdm_path_set(int on) {
+    char bin[2048];
+    char *path = NULL;
+    DWORD type = REG_EXPAND_SZ;
+    HKEY hk;
+    int rc = -1;
+    if (bindir(bin, sizeof(bin)) != 0) return -1;
+    if (read_user_path(&path, &type) != 0) return -1;
+    if (on) {
+        if (!path_has(path, bin)) {
+            size_t need = strlen(path) + 1 + strlen(bin) + 1;
+            char *np = (char *)malloc(need);
+            if (!np) {
+                free(path);
+                return -1;
+            }
+            if (path[0])
+                snprintf(np, need, "%s;%s", path, bin);
+            else
+                snprintf(np, need, "%s", bin);
+            free(path);
+            path = np;
+        } else {
+            rc = 0; /* already there */
+        }
+    } else {
+        /* rebuild without our entry */
+        size_t len = strlen(path);
+        char *np = (char *)malloc(len + 1);
+        char *w;
+        const char *p;
+        size_t elen = strlen(bin);
+        if (!np) {
+            free(path);
+            return -1;
+        }
+        w = np;
+        p = path;
+        while (*p) {
+            const char *semi = strchr(p, ';');
+            size_t n = semi ? (size_t)(semi - p) : strlen(p);
+            size_t tn = n;
+            while (tn > 0 && (p[tn-1] == '\\' || p[tn-1] == '/')) tn--;
+            if (!(tn == elen && _strnicmp(p, bin, tn) == 0)) {
+                if (w != np) *w++ = ';';
+                memcpy(w, p, n);
+                w += n;
+            }
+            if (!semi) break;
+            p = semi + 1;
+        }
+        *w = 0;
+        free(path);
+        path = np;
+    }
+    if (rc != 0) {
+        if (RegOpenKeyExA(HKEY_CURRENT_USER, "Environment", 0,
+                          KEY_SET_VALUE, &hk) == ERROR_SUCCESS) {
+            if (RegSetValueExA(hk, "Path", 0, type,
+                               (const BYTE *)path,
+                               (DWORD)(strlen(path) + 1)) == ERROR_SUCCESS)
+                rc = 0;
+            RegCloseKey(hk);
+        }
+        if (rc == 0) broadcast_env_change();
+    }
+    free(path);
+    return rc;
+}
+
+/* Auto-start via HKCU\\...\\Run */
 int cdm_autostart_get(void) {
     HKEY hk;
     char val[2048];

@@ -145,6 +145,7 @@ static int g_show_about = 0;
 
 static int g_tray_close = 0;
 static int g_autostart = 0;
+static int g_inpath = 0;
 static int g_update_check = 1;
 static int g_update_state = 0; /* cdm_update_poll result cache */
 static char g_update_tag[64] = {0};
@@ -1079,7 +1080,7 @@ static void draw_opts_modal(struct nk_context *ctx) {
         /* Staged copies: combos/property edit these, globals change only on
          * Apply (Close discards). Seeded from live values on each opening. */
         static int dlg_maxact = -1, dlg_theme = -1, dlg_skin = -1;
-        static int dlg_tray = -1, dlg_auto = -1, dlg_upd = -1;
+        static int dlg_tray = -1, dlg_auto = -1, dlg_upd = -1, dlg_path = -1;
         if (dlg_maxact < 0) {
             dlg_maxact = g_mgr->max_active;
             dlg_theme = g_theme;
@@ -1087,6 +1088,7 @@ static void draw_opts_modal(struct nk_context *ctx) {
             dlg_tray = g_tray_close;
             dlg_auto = g_autostart;
             dlg_upd = g_update_check;
+            dlg_path = g_inpath = cdm_path_get();
         }
         nk_layout_row_dynamic(ctx, 24, 1); nk_label(ctx, "Max concurrent downloads:", NK_TEXT_LEFT);
         nk_layout_row_dynamic(ctx, 26, 1);
@@ -1111,6 +1113,8 @@ static void draw_opts_modal(struct nk_context *ctx) {
         nk_layout_row_dynamic(ctx, 24, 1);
         nk_checkbox_label(ctx, "Start with Windows", &dlg_auto);
         nk_layout_row_dynamic(ctx, 24, 1);
+        nk_checkbox_label(ctx, "Add install folder to user PATH", &dlg_path);
+        nk_layout_row_dynamic(ctx, 24, 1);
         nk_checkbox_label(ctx, "Check for updates at startup", &dlg_upd);
 
         nk_layout_row_begin(ctx, NK_DYNAMIC, 28, 2);
@@ -1124,16 +1128,20 @@ static void draw_opts_modal(struct nk_context *ctx) {
                 if (cdm_autostart_set(dlg_auto ? 1 : 0) == 0)
                     g_autostart = dlg_auto ? 1 : 0;
             }
+            if (!!g_inpath != !!dlg_path) {
+                if (cdm_path_set(dlg_path ? 1 : 0) == 0)
+                    g_inpath = dlg_path ? 1 : 0;
+            }
             cdm_manager_set_max_active(g_mgr, dlg_maxact);
             persist_settings();
             dlg_maxact = dlg_theme = dlg_skin = -1;
-            dlg_tray = dlg_auto = dlg_upd = -1; /* re-seed next open */
+            dlg_tray = dlg_auto = dlg_upd = dlg_path = -1; /* re-seed next open */
             g_show_opts=0;
         }
         nk_layout_row_push(ctx, 0.5f);
         if (nk_button_label(ctx, "Close")) {
             dlg_maxact = dlg_theme = dlg_skin = -1; /* discard staged edits */
-            dlg_tray = dlg_auto = dlg_upd = -1;
+            dlg_tray = dlg_auto = dlg_upd = dlg_path = -1;
             g_show_opts=0;
         }
         nk_layout_row_end(ctx);
